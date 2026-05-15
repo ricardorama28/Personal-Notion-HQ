@@ -4,4 +4,5 @@ anthropic>=0.40.0
 notion-client>=2.2.1
 twilio>=9.0.0
 python-dotenv>=1.0.0
+python-multipart>=0.0.9
 dateparser>=1.2.0
