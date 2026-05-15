@@ -76,7 +76,33 @@ railway init
 railway up
 ```
 
-Setear todas las env vars en el dashboard de Railway. Cambiar el webhook de Twilio a la URL de Railway.
+El repo incluye un `Procfile` (`web: uvicorn main:app --host 0.0.0.0 --port $PORT`)
+para que Railway levante el server bindeado al puerto correcto. Sin esto la app
+no es alcanzable y Twilio responde con su eco por defecto.
+
+Pasos:
+
+1. Setear **todas** las env vars en el dashboard de Railway (el `.env` local NO
+   se deploya): `NOTION_TOKEN`, `TASKS_DB_ID`, `EVENTS_DB_ID`, `PROJECTS_DB_ID`,
+   `ANTHROPIC_API_KEY`, `MY_WHATSAPP`.
+2. En el Sandbox de Twilio, "When a message comes in":
+   `https://<tu-url-railway>/webhook`, método **HTTP POST**.
+
+## Debug
+
+Si Twilio responde *"You said: ... Configure your WhatsApp Sandbox's Inbound URL
+to change this message"*, **Twilio no está llegando a la app**. Checklist:
+
+1. Abrí `https://<tu-url-railway>/health` en el navegador. Tiene que devolver
+   `{"ok": true, "my_whatsapp_set": true, "anthropic_key_set": true,
+   "notion_token_set": true}`. Si algún booleano es `false`, falta esa env var
+   en Railway.
+2. Verificá que el webhook de Twilio sea exactamente `.../webhook` con **POST**.
+3. Mandá un WhatsApp y mirá los logs de Railway: debe aparecer
+   `inbound webhook From=... Body=...`. Si no aparece, Twilio no está llegando
+   (revisá URL/deploy).
+4. Si te responde `⚠️ No autorizado. Recibí From=...`: copiá ese valor exacto
+   a la env var `MY_WHATSAPP` en Railway y redeployá.
 
 ## Limites del MVP
 
