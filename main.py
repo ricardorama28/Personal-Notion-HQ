@@ -67,8 +67,12 @@ def run_agent(messages: list) -> tuple[str, list]:
             messages=messages,
         )
 
-        # agregar respuesta del modelo al historial
-        messages.append({"role": "assistant", "content": response.content})
+        # agregar respuesta del modelo al historial (serializar los content
+        # blocks del SDK a dicts para que sean JSON-serializables al guardar)
+        messages.append({
+            "role": "assistant",
+            "content": [block.model_dump() for block in response.content],
+        })
 
         if response.stop_reason != "tool_use":
             # respuesta final
