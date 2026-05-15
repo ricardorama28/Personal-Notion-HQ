@@ -9,6 +9,7 @@ from typing import Optional
 
 import dateparser
 from notion_client import Client
+from notion_client.errors import APIResponseError
 
 notion = Client(auth=os.environ["NOTION_TOKEN"])
 
@@ -318,3 +319,29 @@ def today_context() -> str:
     now = datetime.now()
     dias = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
     return f"Hoy es {dias[now.weekday()]} {now.strftime('%Y-%m-%d')}."
+
+
+# ---------- Diagnostics ----------
+
+def _read_probe(db_id: str):
+    """Probe de lectura sobre una DB. Devuelve 'ok' o el detalle del error de Notion."""
+    try:
+        notion.databases.query(database_id=db_id, page_size=1)
+        return "ok"
+    except APIResponseError as e:
+        return {"status": e.status, "code": e.code, "message": str(e)}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def diagnostics() -> dict:
+    """Solo probes de LECTURA (no escribe) para diagnosticar permisos de la integracion."""
+    return {
+        "token_set": bool(os.environ.get("NOTION_TOKEN")),
+        "projects_db_id_set": bool(os.environ.get("PROJECTS_DB_ID")),
+        "tasks_db_id_set": bool(os.environ.get("TASKS_DB_ID")),
+        "events_db_id_set": bool(os.environ.get("EVENTS_DB_ID")),
+        "projects_db_read": _read_probe(PROJECTS_DB),
+        "tasks_db_read": _read_probe(TASKS_DB),
+        "events_db_read": _read_probe(EVENTS_DB),
+    }

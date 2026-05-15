@@ -16,7 +16,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 from prompts import SYSTEM
 from tools import TOOLS, execute_tool
-from notion_ops import today_context
+from notion_ops import today_context, diagnostics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("wpp")
@@ -147,3 +147,9 @@ async def health():
         "anthropic_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "notion_token_set": bool(os.environ.get("NOTION_TOKEN")),
     }
+
+
+@app.get("/diag")
+async def diag():
+    """Probes de lectura contra Notion para diagnosticar permisos de la integracion."""
+    return diagnostics()

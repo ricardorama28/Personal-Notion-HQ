@@ -1,7 +1,13 @@
 """
 Definiciones de tools para Claude + dispatcher hacia notion_ops.
 """
+import logging
+
+from notion_client.errors import APIResponseError
+
 import notion_ops as ops
+
+log = logging.getLogger("wpp")
 
 TOOLS = [
     {
@@ -129,5 +135,12 @@ def execute_tool(name: str, args: dict) -> dict:
         return {"error": f"tool desconocida: {name}"}
     try:
         return fn(**args)
+    except APIResponseError as e:
+        log.error(
+            "Notion API error en tool=%s status=%s code=%s body=%s",
+            name, e.status, e.code, getattr(e, "body", None),
+        )
+        return {"error": f"NotionAPIError status={e.status} code={e.code}: {e}"}
     except Exception as e:
+        log.exception("error ejecutando tool=%s", name)
         return {"error": f"{type(e).__name__}: {e}"}
