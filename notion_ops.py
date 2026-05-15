@@ -10,8 +10,7 @@ from typing import Optional
 import dateparser
 from notion_client import Client
 
-notion = Client(auth=os.environ["NOTION_TOKEN"])
-
+notion = Client(auth=os.environ["NOTION_TOKEN"], notion_version="2022-06-28")
 TASKS_DB = os.environ["TASKS_DB_ID"]
 EVENTS_DB = os.environ["EVENTS_DB_ID"]
 PROJECTS_DB = os.environ["PROJECTS_DB_ID"]
