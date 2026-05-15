@@ -14,7 +14,7 @@ notion = Client(auth=os.environ["NOTION_TOKEN"])
 
 TASKS_DB = os.environ["TASKS_DB_ID"]
 EVENTS_DB = os.environ["EVENTS_DB_ID"]
-MATERIAS_DB = os.environ["MATERIAS_DB_ID"]
+PROJECTS_DB = os.environ["PROJECTS_DB_ID"]
 
 
 # ---------- helpers ----------
@@ -48,12 +48,12 @@ def _extract_title(page: dict) -> str:
     return "(sin titulo)"
 
 
-# ---------- Materias (cache) ----------
+# ---------- Projects (cache) ----------
 
 @lru_cache(maxsize=1)
-def _materias_index() -> dict:
+def _projects_index() -> dict:
     """Mapa nombre_lowercase -> page_id. Se cachea en memoria del proceso."""
-    res = notion.databases.query(database_id=MATERIAS_DB)
+    res = notion.databases.query(database_id=PROJECTS_DB)
     out = {}
     for row in res["results"]:
         name = _extract_title(row).strip()
@@ -61,17 +61,17 @@ def _materias_index() -> dict:
     return out
 
 
-def list_subjects() -> dict:
-    """Lista de materias disponibles. Llamala antes de crear cualquier cosa con materia."""
-    idx = _materias_index()
-    return {"subjects": [v["name"] for v in idx.values()]}
+def list_projects() -> dict:
+    """Lista de proyectos disponibles. Llamala antes de crear cualquier cosa con proyecto."""
+    idx = _projects_index()
+    return {"projects": [v["name"] for v in idx.values()]}
 
 
-def _find_subject_id(name: str) -> Optional[str]:
+def _find_project_id(name: str) -> Optional[str]:
     """Match fuzzy: exacto, luego startswith, luego contains."""
     if not name:
         return None
-    idx = _materias_index()
+    idx = _projects_index()
     key = name.lower().strip()
     if key in idx:
         return idx[key]["id"]
@@ -106,7 +106,7 @@ def create_task(
     name: str,
     due: Optional[str] = None,
     priority: Optional[str] = None,
-    subject: Optional[str] = None,
+    project: Optional[str] = None,
     tags: Optional[list] = None,
     notes: Optional[str] = None,
 ) -> dict:
@@ -120,12 +120,12 @@ def create_task(
             props["Due"] = {"date": {"start": d}}
     if priority:
         props["Priority"] = {"select": {"name": priority}}
-    if subject:
-        sid = _find_subject_id(subject)
+    if project:
+        sid = _find_project_id(project)
         if sid:
             props["Project"] = {"relation": [{"id": sid}]}
         else:
-            return {"error": f"No encontre la materia '{subject}'. Materias disponibles: {list_subjects()['subjects']}"}
+            return {"error": f"No encontre el proyecto '{project}'. Proyectos disponibles: {list_projects()['projects']}"}
     if tags:
         props["Tags"] = {"multi_select": [{"name": t} for t in tags]}
     if notes:
@@ -152,14 +152,14 @@ def update_task(task_id: str, status: Optional[str] = None, due: Optional[str] =
     return {"ok": True, "task_id": task_id}
 
 
-def query_tasks(status: Optional[str] = None, subject: Optional[str] = None,
+def query_tasks(status: Optional[str] = None, project: Optional[str] = None,
                 due_before: Optional[str] = None, due_after: Optional[str] = None,
                 limit: int = 20) -> dict:
     filters = []
     if status:
         filters.append({"property": "Status", "select": {"equals": status}})
-    if subject:
-        sid = _find_subject_id(subject)
+    if project:
+        sid = _find_project_id(project)
         if sid:
             filters.append({"property": "Project", "relation": {"contains": sid}})
     if due_before:
@@ -193,7 +193,7 @@ def query_tasks(status: Optional[str] = None, subject: Optional[str] = None,
 # ---------- Events ----------
 
 def create_event(name: str, date: str, event_type: Optional[str] = None,
-                 subject: Optional[str] = None) -> dict:
+                 project: Optional[str] = None) -> dict:
     d = _parse_date(date)
     if not d:
         return {"error": f"no pude parsear la fecha '{date}'"}
@@ -203,16 +203,16 @@ def create_event(name: str, date: str, event_type: Optional[str] = None,
     }
     if event_type:
         props["Type"] = {"select": {"name": event_type}}
-    if subject:
-        sid = _find_subject_id(subject)
+    if project:
+        sid = _find_project_id(project)
         if sid:
-            props["Subject"] = {"relation": [{"id": sid}]}
+            props["Project"] = {"relation": [{"id": sid}]}
     page = notion.pages.create(parent={"database_id": EVENTS_DB}, properties=props)
     return {"ok": True, "event_id": page["id"], "name": name, "date": d}
 
 
 def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
-                 subject: Optional[str] = None, limit: int = 20) -> dict:
+                 project: Optional[str] = None, limit: int = 20) -> dict:
     filters = []
     if date_from:
         d = _parse_date(date_from)
@@ -222,10 +222,10 @@ def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
         d = _parse_date(date_to)
         if d:
             filters.append({"property": "Date", "date": {"on_or_before": d}})
-    if subject:
-        sid = _find_subject_id(subject)
+    if project:
+        sid = _find_project_id(project)
         if sid:
-            filters.append({"property": "Subject", "relation": {"contains": sid}})
+            filters.append({"property": "Project", "relation": {"contains": sid}})
 
     query = {"database_id": EVENTS_DB, "page_size": limit,
              "sorts": [{"property": "Date", "direction": "ascending"}]}
@@ -247,15 +247,15 @@ def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
 
 # ---------- Notes (apuntes) ----------
 
-def add_note(subject: str, content: str, heading: Optional[str] = None) -> dict:
-    """Agrega bloques a la sub-pagina 'Apuntes' de la materia."""
-    sid = _find_subject_id(subject)
+def add_note(project: str, content: str, heading: Optional[str] = None) -> dict:
+    """Agrega bloques a la sub-pagina 'Apuntes' del proyecto."""
+    sid = _find_project_id(project)
     if not sid:
-        return {"error": f"no encontre la materia '{subject}'. Disponibles: {list_subjects()['subjects']}"}
+        return {"error": f"no encontre el proyecto '{project}'. Disponibles: {list_projects()['projects']}"}
 
     apuntes_id = _find_subpage(sid, "Apuntes")
     if not apuntes_id:
-        return {"error": f"la materia '{subject}' no tiene sub-pagina 'Apuntes'"}
+        return {"error": f"el proyecto '{project}' no tiene sub-pagina 'Apuntes'"}
 
     children = []
     # heading con fecha si no se pasa heading explicito
@@ -273,21 +273,21 @@ def add_note(subject: str, content: str, heading: Optional[str] = None) -> dict:
             })
 
     notion.blocks.children.append(block_id=apuntes_id, children=children)
-    return {"ok": True, "subject": subject, "added_blocks": len(children)}
+    return {"ok": True, "project": project, "added_blocks": len(children)}
 
 
 # ---------- Diagrams ----------
 
-def create_diagram(subject: str, title: str, mermaid_code: str,
+def create_diagram(project: str, title: str, mermaid_code: str,
                    description: Optional[str] = None) -> dict:
-    """Crea una pagina nueva dentro de 'Diagramas' de la materia, con un code block mermaid."""
-    sid = _find_subject_id(subject)
+    """Crea una pagina nueva dentro de 'Diagramas' del proyecto, con un code block mermaid."""
+    sid = _find_project_id(project)
     if not sid:
-        return {"error": f"no encontre la materia '{subject}'"}
+        return {"error": f"no encontre el proyecto '{project}'"}
 
     diagramas_id = _find_subpage(sid, "Diagramas")
     if not diagramas_id:
-        return {"error": f"la materia '{subject}' no tiene sub-pagina 'Diagramas'"}
+        return {"error": f"el proyecto '{project}' no tiene sub-pagina 'Diagramas'"}
 
     children = []
     if description:

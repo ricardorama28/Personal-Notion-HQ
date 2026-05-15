@@ -83,7 +83,7 @@ Setear todas las env vars en el dashboard de Railway. Cambiar el webhook de Twil
 - Solo texto (sin audio, sin imagenes)
 - Sesion guardada en `/tmp/` (se pierde si Railway reinicia el contenedor)
 - Solo respondes a un numero (`MY_WHATSAPP`)
-- Si renombras una materia en Notion, restart del proceso para limpiar el cache
+- Si renombras un proyecto en Notion, restart del proceso para limpiar el cache
 
 ## Proximos pasos (Fase 2)
 
