@@ -1,7 +1,13 @@
 """
 Operaciones sobre Notion. Cada funcion devuelve un dict serializable
 para que se pueda mandar como tool_result a Claude.
+
+Workspace reestructurado (10 DB bajo PERSONAL HQ). Las funciones de
+creacion vinculan automaticamente el registro a la fila de Inbox/WhatsApp
+Log del mensaje en curso (via contextvar) y registran el tipo detectado
+para que el webhook pueda cerrar esa fila.
 """
+import contextvars
 import os
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -12,9 +18,65 @@ from notion_client import Client
 from notion_client.errors import APIResponseError
 
 notion = Client(auth=os.environ["NOTION_TOKEN"], notion_version="2022-06-28")
+
 TASKS_DB = os.environ["TASKS_DB_ID"]
 EVENTS_DB = os.environ["EVENTS_DB_ID"]
 PROJECTS_DB = os.environ["PROJECTS_DB_ID"]
+NOTES_DB = os.environ.get("NOTES_DB_ID", "")
+EXPENSES_DB = os.environ.get("EXPENSES_DB_ID", "")
+MEALS_DB = os.environ.get("MEALS_DB_ID", "")
+HABITS_DB = os.environ.get("HABITS_DB_ID", "")
+HABITLOG_DB = os.environ.get("HABITLOG_DB_ID", "")
+INBOX_DB = os.environ.get("INBOX_DB_ID", "")
+
+# enums vivos (deben coincidir con el esquema de Notion)
+TASK_STATUS = {"To Do", "Doing", "Done"}
+TASK_TYPES = {"Task", "Reminder"}
+PRIORITY = {"High", "Med", "Low"}
+EVENT_TYPES = {"Class", "Exam", "Appointment", "Deadline", "Personal"}
+EVENT_TYPE_ES = {
+    "clase": "Class", "parcial": "Exam", "examen": "Exam", "final": "Exam",
+    "turno": "Appointment", "cita": "Appointment", "entrega": "Deadline",
+    "deadline": "Deadline", "personal": "Personal", "otro": "Personal",
+}
+NOTE_TYPES = {"Note", "Idea", "Reference", "ClassNote"}
+NOTE_TAGS = {"Estudio", "Tech", "Personal"}
+EXPENSE_CATEGORIES = {"Supermercado", "Comida", "Transporte", "Servicios",
+                      "Salud", "Auto", "Casa", "Ocio", "Otros"}
+EXPENSE_METHODS = {"Efectivo", "Débito", "Crédito", "Transferencia"}
+MEAL_TYPES = {"Desayuno", "Almuerzo", "Merienda", "Cena", "Snack"}
+HABIT_STATUS = {"Done", "Skipped"}
+
+
+# ---------- contexto de Inbox (por request) ----------
+
+_inbox_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "inbox_page_id", default=None)
+_writes_ctx: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "writes", default=None)
+
+
+def set_inbox(page_id: Optional[str]) -> None:
+    """Activa el contexto: las creaciones siguientes se vinculan a esta fila."""
+    _inbox_ctx.set(page_id)
+    _writes_ctx.set([])
+
+
+def clear_inbox() -> None:
+    _inbox_ctx.set(None)
+    _writes_ctx.set(None)
+
+
+def _link_inbox(props: dict) -> None:
+    pid = _inbox_ctx.get()
+    if pid:
+        props["Inbox"] = {"relation": [{"id": pid}]}
+
+
+def _record_write(detected_type: Optional[str]) -> None:
+    w = _writes_ctx.get()
+    if w is not None:
+        w.append(detected_type)
 
 
 # ---------- helpers ----------
@@ -23,10 +85,10 @@ def _parse_date(text: str) -> Optional[str]:
     """Acepta 'mañana', '20 de mayo', '2026-05-20', etc. Devuelve YYYY-MM-DD."""
     if not text:
         return None
-    # ya viene formateado
     if len(text) == 10 and text[4] == "-" and text[7] == "-":
         return text
-    dt = dateparser.parse(text, languages=["es", "en"], settings={"PREFER_DATES_FROM": "future"})
+    dt = dateparser.parse(text, languages=["es", "en"],
+                          settings={"PREFER_DATES_FROM": "future"})
     return dt.date().isoformat() if dt else None
 
 
@@ -36,6 +98,13 @@ def _title(text: str) -> list:
 
 def _rich(text: str) -> list:
     return [{"type": "text", "text": {"content": text}}]
+
+
+def _sel(value: Optional[str], allowed: set) -> Optional[dict]:
+    """Devuelve un select prop solo si el valor es una opcion valida."""
+    if value and value in allowed:
+        return {"select": {"name": value}}
+    return None
 
 
 def _extract_title(page: dict) -> str:
@@ -62,7 +131,7 @@ def _projects_index() -> dict:
 
 
 def list_projects() -> dict:
-    """Lista de proyectos disponibles. Llamala antes de crear cualquier cosa con proyecto."""
+    """Lista de proyectos disponibles. Llamala antes de crear algo con proyecto."""
     idx = _projects_index()
     return {"projects": [v["name"] for v in idx.values()]}
 
@@ -84,68 +153,158 @@ def _find_project_id(name: str) -> Optional[str]:
     return None
 
 
-def _find_subpage(parent_id: str, title: str) -> Optional[str]:
-    """Busca una sub-pagina (child_page) por titulo dentro de un padre."""
-    title_lower = title.lower()
-    cursor = None
-    while True:
-        res = notion.blocks.children.list(block_id=parent_id, start_cursor=cursor) if cursor \
-              else notion.blocks.children.list(block_id=parent_id)
-        for block in res["results"]:
-            if block["type"] == "child_page" and block["child_page"]["title"].lower() == title_lower:
-                return block["id"]
-        if not res.get("has_more"):
-            break
-        cursor = res.get("next_cursor")
+# ---------- Habits (cache) ----------
+
+@lru_cache(maxsize=1)
+def _habits_index() -> dict:
+    """Mapa nombre_lowercase -> {id, name, active}."""
+    if not HABITS_DB:
+        return {}
+    res = notion.databases.query(database_id=HABITS_DB)
+    out = {}
+    for row in res["results"]:
+        name = _extract_title(row).strip()
+        active = (row["properties"].get("Active", {}) or {}).get("checkbox", False)
+        out[name.lower()] = {"id": row["id"], "name": name, "active": active}
+    return out
+
+
+def list_habits() -> dict:
+    """Lista de habitos activos. Llamala antes de loguear un habito."""
+    idx = _habits_index()
+    return {"habits": [v["name"] for v in idx.values() if v["active"]]}
+
+
+def _find_habit(name: str) -> Optional[dict]:
+    if not name:
+        return None
+    idx = _habits_index()
+    key = name.lower().strip()
+    if key in idx:
+        return idx[key]
+    for k, v in idx.items():
+        if k.startswith(key) or key.startswith(k):
+            return v
+    for k, v in idx.items():
+        if key in k or k in key:
+            return v
     return None
+
+
+# ---------- Inbox / WhatsApp Log ----------
+
+def create_inbox_entry(raw: str, sender: str,
+                       twilio_sid: Optional[str] = None) -> dict:
+    """Crea (o recupera) la fila del mensaje en Inbox/WhatsApp Log.
+
+    Idempotencia: si llega el mismo Twilio SID (retry de Twilio) devuelve
+    la fila existente con existing=True para no duplicar el procesamiento.
+    """
+    if not INBOX_DB:
+        return {"page_id": None, "existing": False}
+
+    if twilio_sid:
+        try:
+            found = notion.databases.query(
+                database_id=INBOX_DB, page_size=1,
+                filter={"property": "Twilio SID",
+                        "rich_text": {"equals": twilio_sid}},
+            )
+            if found["results"]:
+                return {"page_id": found["results"][0]["id"], "existing": True}
+        except APIResponseError:
+            pass  # ante error de query seguimos y creamos igual
+
+    clean_sender = sender.replace("whatsapp:", "").strip()
+    props = {
+        "Title": {"title": _title((raw[:60] or "(vacío)"))},
+        "Raw Message": {"rich_text": _rich(raw[:1900])},
+        "Sender": {"phone_number": clean_sender or None},
+        "Source": {"select": {"name": "WhatsApp"}},
+        "Received At": {"date": {
+            "start": datetime.now(timezone.utc).isoformat()}},
+        "Processing Status": {"select": {"name": "Pending"}},
+    }
+    if twilio_sid:
+        props["Twilio SID"] = {"rich_text": _rich(twilio_sid)}
+    page = notion.pages.create(parent={"database_id": INBOX_DB},
+                               properties=props)
+    return {"page_id": page["id"], "existing": False}
+
+
+def finalize_inbox(page_id: str, action_taken: str) -> dict:
+    """Cierra la fila del Inbox segun lo que se haya hecho con el mensaje."""
+    if not page_id:
+        return {"ok": False}
+    writes = _writes_ctx.get() or []
+    detected = next((w for w in writes if w), None) or "Unknown"
+    did_write = len(writes) > 0
+    status = "Auto-processed" if did_write else "Needs review"
+    props = {
+        "Processing Status": {"select": {"name": status}},
+        "Detected Type": {"select": {"name": detected}},
+        "Action Taken": {"rich_text": _rich((action_taken or "")[:1900])},
+    }
+    try:
+        notion.pages.update(page_id=page_id, properties=props)
+        return {"ok": True, "status": status, "detected": detected}
+    except APIResponseError as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ---------- Tasks ----------
 
-def create_task(
-    name: str,
-    due: Optional[str] = None,
-    priority: Optional[str] = None,
-    project: Optional[str] = None,
-    tags: Optional[list] = None,
-    notes: Optional[str] = None,
-) -> dict:
+def create_task(name: str, due: Optional[str] = None,
+                 priority: Optional[str] = None, project: Optional[str] = None,
+                 tags: Optional[list] = None, notes: Optional[str] = None,
+                 task_type: str = "Task") -> dict:
+    tt = task_type if task_type in TASK_TYPES else "Task"
     props = {
         "Name": {"title": _title(name)},
-        "Status": {"select": {"name": "Todo"}},
+        "Status": {"select": {"name": "To Do"}},
+        "Type": {"select": {"name": tt}},
+        "Source": {"select": {"name": "WhatsApp"}},
     }
     if due:
         d = _parse_date(due)
         if d:
             props["Due"] = {"date": {"start": d}}
-    if priority:
-        props["Priority"] = {"select": {"name": priority}}
+    p = _sel(priority, PRIORITY)
+    if p:
+        props["Priority"] = p
     if project:
         sid = _find_project_id(project)
         if sid:
             props["Project"] = {"relation": [{"id": sid}]}
         else:
-            return {"error": f"No encontre el proyecto '{project}'. Proyectos disponibles: {list_projects()['projects']}"}
+            return {"error": f"No encontre el proyecto '{project}'. "
+                             f"Disponibles: {list_projects()['projects']}"}
     if tags:
         props["Tags"] = {"multi_select": [{"name": t} for t in tags]}
     if notes:
         props["Notes"] = {"rich_text": _rich(notes)}
+    _link_inbox(props)
 
-    page = notion.pages.create(parent={"database_id": TASKS_DB}, properties=props)
-    return {"ok": True, "task_id": page["id"], "name": name}
+    page = notion.pages.create(parent={"database_id": TASKS_DB},
+                               properties=props)
+    _record_write("Reminder" if tt == "Reminder" else "Task")
+    return {"ok": True, "task_id": page["id"], "name": name, "type": tt}
 
 
-def update_task(task_id: str, status: Optional[str] = None, due: Optional[str] = None,
+def update_task(task_id: str, status: Optional[str] = None,
+                due: Optional[str] = None,
                 priority: Optional[str] = None) -> dict:
     props = {}
-    if status:
-        props["Status"] = {"select": {"name": status}}
+    s = _sel(status, TASK_STATUS)
+    if s:
+        props["Status"] = s
     if due:
         d = _parse_date(due)
         if d:
             props["Due"] = {"date": {"start": d}}
-    if priority:
-        props["Priority"] = {"select": {"name": priority}}
+    p = _sel(priority, PRIORITY)
+    if p:
+        props["Priority"] = p
     if not props:
         return {"error": "nada que actualizar"}
     notion.pages.update(page_id=task_id, properties=props)
@@ -156,12 +315,13 @@ def query_tasks(status: Optional[str] = None, project: Optional[str] = None,
                 due_before: Optional[str] = None, due_after: Optional[str] = None,
                 limit: int = 20) -> dict:
     filters = []
-    if status:
+    if status and status in TASK_STATUS:
         filters.append({"property": "Status", "select": {"equals": status}})
     if project:
         sid = _find_project_id(project)
         if sid:
-            filters.append({"property": "Project", "relation": {"contains": sid}})
+            filters.append({"property": "Project",
+                            "relation": {"contains": sid}})
     if due_before:
         d = _parse_date(due_before)
         if d:
@@ -171,10 +331,10 @@ def query_tasks(status: Optional[str] = None, project: Optional[str] = None,
         if d:
             filters.append({"property": "Due", "date": {"on_or_after": d}})
 
-    query = {"database_id": TASKS_DB, "page_size": limit}
+    query = {"database_id": TASKS_DB, "page_size": limit,
+             "sorts": [{"property": "Due", "direction": "ascending"}]}
     if filters:
         query["filter"] = {"and": filters} if len(filters) > 1 else filters[0]
-    query["sorts"] = [{"property": "Due", "direction": "ascending"}]
 
     res = notion.databases.query(**query)
     tasks = []
@@ -201,14 +361,21 @@ def create_event(name: str, date: str, event_type: Optional[str] = None,
         "Name": {"title": _title(name)},
         "Date": {"date": {"start": d}},
     }
+    et = "Personal"
     if event_type:
-        props["Type"] = {"select": {"name": event_type}}
+        et = event_type if event_type in EVENT_TYPES else \
+            EVENT_TYPE_ES.get(event_type.lower(), "Personal")
+    props["Type"] = {"select": {"name": et}}
     if project:
         sid = _find_project_id(project)
         if sid:
             props["Project"] = {"relation": [{"id": sid}]}
-    page = notion.pages.create(parent={"database_id": EVENTS_DB}, properties=props)
-    return {"ok": True, "event_id": page["id"], "name": name, "date": d}
+    page = notion.pages.create(parent={"database_id": EVENTS_DB},
+                               properties=props)
+    # EVENTS no tiene relacion Inbox; igual cuenta como escritura.
+    _record_write(None)
+    return {"ok": True, "event_id": page["id"], "name": name, "date": d,
+            "type": et}
 
 
 def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
@@ -225,7 +392,8 @@ def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
     if project:
         sid = _find_project_id(project)
         if sid:
-            filters.append({"property": "Project", "relation": {"contains": sid}})
+            filters.append({"property": "Project",
+                            "relation": {"contains": sid}})
 
     query = {"database_id": EVENTS_DB, "page_size": limit,
              "sorts": [{"property": "Date", "direction": "ascending"}]}
@@ -245,70 +413,160 @@ def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
     return {"events": events, "count": len(events)}
 
 
-# ---------- Notes (apuntes) ----------
+# ---------- Notes ----------
 
-def add_note(project: str, content: str, heading: Optional[str] = None) -> dict:
-    """Agrega bloques a la sub-pagina 'Apuntes' del proyecto."""
-    sid = _find_project_id(project)
-    if not sid:
-        return {"error": f"no encontre el proyecto '{project}'. Disponibles: {list_projects()['projects']}"}
-
-    apuntes_id = _find_subpage(sid, "Apuntes")
-    if not apuntes_id:
-        return {"error": f"el proyecto '{project}' no tiene sub-pagina 'Apuntes'"}
-
-    children = []
-    # heading con fecha si no se pasa heading explicito
-    h = heading or f"{datetime.now().strftime('%Y-%m-%d')}"
-    children.append({
-        "type": "heading_3",
-        "heading_3": {"rich_text": _rich(h)}
-    })
-    # contenido como parrafos (split por doble newline)
-    for paragraph in content.split("\n\n"):
-        if paragraph.strip():
-            children.append({
-                "type": "paragraph",
-                "paragraph": {"rich_text": _rich(paragraph.strip())}
-            })
-
-    notion.blocks.children.append(block_id=apuntes_id, children=children)
-    return {"ok": True, "project": project, "added_blocks": len(children)}
+def add_note(content: str, title: Optional[str] = None,
+             note_type: str = "Note", project: Optional[str] = None,
+             tags: Optional[list] = None) -> dict:
+    """Crea una nota en la DB NOTES (reemplaza la vieja sub-pagina Apuntes)."""
+    if not NOTES_DB:
+        return {"error": "NOTES_DB_ID no configurado"}
+    nt = note_type if note_type in NOTE_TYPES else "Note"
+    props = {
+        "Name": {"title": _title(title or content[:60] or "Nota")},
+        "Body": {"rich_text": _rich(content[:1900])},
+        "Type": {"select": {"name": nt}},
+    }
+    if project:
+        sid = _find_project_id(project)
+        if sid:
+            props["Project"] = {"relation": [{"id": sid}]}
+    if tags:
+        valid = [{"name": t} for t in tags if t in NOTE_TAGS]
+        if valid:
+            props["Tags"] = {"multi_select": valid}
+    _link_inbox(props)
+    page = notion.pages.create(parent={"database_id": NOTES_DB},
+                               properties=props)
+    _record_write("Idea" if nt == "Idea" else "Note")
+    return {"ok": True, "note_id": page["id"],
+            "title": title or content[:60]}
 
 
 # ---------- Diagrams ----------
 
-def create_diagram(project: str, title: str, mermaid_code: str,
-                   description: Optional[str] = None) -> dict:
-    """Crea una pagina nueva dentro de 'Diagramas' del proyecto, con un code block mermaid."""
-    sid = _find_project_id(project)
-    if not sid:
-        return {"error": f"no encontre el proyecto '{project}'"}
+def create_diagram(title: str, mermaid_code: str,
+                   description: Optional[str] = None,
+                   project: Optional[str] = None) -> dict:
+    """Crea una nota tipo Reference con un bloque de codigo Mermaid.
 
-    diagramas_id = _find_subpage(sid, "Diagramas")
-    if not diagramas_id:
-        return {"error": f"el proyecto '{project}' no tiene sub-pagina 'Diagramas'"}
+    La vieja sub-pagina 'Diagramas' fue eliminada; ahora vive en NOTES.
+    """
+    if not NOTES_DB:
+        return {"error": "NOTES_DB_ID no configurado"}
+    props = {
+        "Name": {"title": _title(title)},
+        "Type": {"select": {"name": "Reference"}},
+    }
+    if description:
+        props["Body"] = {"rich_text": _rich(description[:1900])}
+    if project:
+        sid = _find_project_id(project)
+        if sid:
+            props["Project"] = {"relation": [{"id": sid}]}
+    _link_inbox(props)
 
     children = []
     if description:
-        children.append({
-            "type": "paragraph",
-            "paragraph": {"rich_text": _rich(description)}
-        })
-    children.append({
-        "type": "code",
-        "code": {
-            "rich_text": _rich(mermaid_code),
-            "language": "mermaid"
-        }
-    })
+        children.append({"type": "paragraph",
+                         "paragraph": {"rich_text": _rich(description)}})
+    children.append({"type": "code",
+                     "code": {"rich_text": _rich(mermaid_code),
+                              "language": "mermaid"}})
 
-    new_page = notion.pages.create(
-        parent={"page_id": diagramas_id},
-        properties={"title": {"title": _title(title)}},
-        children=children,
-    )
-    return {"ok": True, "page_id": new_page["id"], "title": title, "url": new_page.get("url")}
+    page = notion.pages.create(parent={"database_id": NOTES_DB},
+                               properties=props, children=children)
+    _record_write("Note")
+    return {"ok": True, "note_id": page["id"], "title": title,
+            "url": page.get("url")}
+
+
+# ---------- Expenses ----------
+
+def add_expense(name: str, amount: Optional[float] = None,
+                category: Optional[str] = None, method: Optional[str] = None,
+                date: Optional[str] = None, notes: Optional[str] = None) -> dict:
+    if not EXPENSES_DB:
+        return {"error": "EXPENSES_DB_ID no configurado"}
+    props = {
+        "Name": {"title": _title(name)},
+        "Source": {"select": {"name": "WhatsApp"}},
+    }
+    if amount is not None:
+        props["Amount"] = {"number": float(amount)}
+    c = _sel(category, EXPENSE_CATEGORIES)
+    if c:
+        props["Category"] = c
+    m = _sel(method, EXPENSE_METHODS)
+    if m:
+        props["Method"] = m
+    d = _parse_date(date) if date else datetime.now().date().isoformat()
+    if d:
+        props["Date"] = {"date": {"start": d}}
+    if notes:
+        props["Notes"] = {"rich_text": _rich(notes)}
+    _link_inbox(props)
+    page = notion.pages.create(parent={"database_id": EXPENSES_DB},
+                               properties=props)
+    _record_write("Expense")
+    return {"ok": True, "expense_id": page["id"], "name": name,
+            "amount": amount}
+
+
+# ---------- Meals ----------
+
+def add_meal(name: str, meal_type: Optional[str] = None,
+             date: Optional[str] = None, ingredients: Optional[str] = None,
+             rating: Optional[float] = None) -> dict:
+    if not MEALS_DB:
+        return {"error": "MEALS_DB_ID no configurado"}
+    props = {
+        "Name": {"title": _title(name)},
+        "Source": {"select": {"name": "WhatsApp"}},
+    }
+    mt = _sel(meal_type, MEAL_TYPES)
+    if mt:
+        props["Meal type"] = mt
+    d = _parse_date(date) if date else datetime.now().date().isoformat()
+    if d:
+        props["Date"] = {"date": {"start": d}}
+    if ingredients:
+        props["Ingredients"] = {"rich_text": _rich(ingredients)}
+    if rating is not None:
+        props["Rating"] = {"number": float(rating)}
+    _link_inbox(props)
+    page = notion.pages.create(parent={"database_id": MEALS_DB},
+                               properties=props)
+    _record_write("Meal")
+    return {"ok": True, "meal_id": page["id"], "name": name}
+
+
+# ---------- Habits ----------
+
+def log_habit(habit_name: str, status: str = "Done",
+              date: Optional[str] = None) -> dict:
+    if not HABITLOG_DB:
+        return {"error": "HABITLOG_DB_ID no configurado"}
+    habit = _find_habit(habit_name)
+    if not habit:
+        return {"error": f"no encontre el habito '{habit_name}'. "
+                         f"Activos: {list_habits()['habits']}"}
+    st = status if status in HABIT_STATUS else "Done"
+    d = _parse_date(date) if date else datetime.now().date().isoformat()
+    props = {
+        "Name": {"title": _title(f"{habit['name']} — {d}")},
+        "Habit": {"relation": [{"id": habit["id"]}]},
+        "Status": {"select": {"name": st}},
+        "Source": {"select": {"name": "WhatsApp"}},
+    }
+    if d:
+        props["Date"] = {"date": {"start": d}}
+    _link_inbox(props)
+    page = notion.pages.create(parent={"database_id": HABITLOG_DB},
+                               properties=props)
+    _record_write("Habit")
+    return {"ok": True, "habit_log_id": page["id"], "habit": habit["name"],
+            "status": st}
 
 
 # ---------- Context helper ----------
@@ -316,14 +574,17 @@ def create_diagram(project: str, title: str, mermaid_code: str,
 def today_context() -> str:
     """Para inyectar en el system prompt."""
     now = datetime.now()
-    dias = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+    dias = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado",
+            "domingo"]
     return f"Hoy es {dias[now.weekday()]} {now.strftime('%Y-%m-%d')}."
 
 
 # ---------- Diagnostics ----------
 
 def _read_probe(db_id: str):
-    """Probe de lectura sobre una DB. Devuelve 'ok' o el detalle del error de Notion."""
+    """Probe de lectura sobre una DB. Devuelve 'ok' o el detalle del error."""
+    if not db_id:
+        return "not_configured"
     try:
         notion.databases.query(database_id=db_id, page_size=1)
         return "ok"
@@ -334,13 +595,16 @@ def _read_probe(db_id: str):
 
 
 def diagnostics() -> dict:
-    """Solo probes de LECTURA (no escribe) para diagnosticar permisos de la integracion."""
+    """Solo probes de LECTURA (no escribe) para diagnosticar permisos."""
     return {
         "token_set": bool(os.environ.get("NOTION_TOKEN")),
-        "projects_db_id_set": bool(os.environ.get("PROJECTS_DB_ID")),
-        "tasks_db_id_set": bool(os.environ.get("TASKS_DB_ID")),
-        "events_db_id_set": bool(os.environ.get("EVENTS_DB_ID")),
         "projects_db_read": _read_probe(PROJECTS_DB),
         "tasks_db_read": _read_probe(TASKS_DB),
         "events_db_read": _read_probe(EVENTS_DB),
+        "notes_db_read": _read_probe(NOTES_DB),
+        "expenses_db_read": _read_probe(EXPENSES_DB),
+        "meals_db_read": _read_probe(MEALS_DB),
+        "habits_db_read": _read_probe(HABITS_DB),
+        "habitlog_db_read": _read_probe(HABITLOG_DB),
+        "inbox_db_read": _read_probe(INBOX_DB),
     }
