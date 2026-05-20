@@ -20,6 +20,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test")
 os.environ.setdefault("MY_WHATSAPP", "whatsapp:+5491100000000")
 os.environ.setdefault("TWILIO_AUTH_TOKEN", "test_twilio_token")
 os.environ["TWILIO_VALIDATE"] = "false"
+os.environ.setdefault("ENABLE_DOCS", "false")
 os.environ.setdefault("TASKS_DB_ID", "db_tasks")
 os.environ.setdefault("EVENTS_DB_ID", "db_events")
 os.environ.setdefault("PROJECTS_DB_ID", "db_projects")

@@ -26,7 +26,13 @@ from tools import TOOLS, execute_tool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("wpp")
 
-app = FastAPI()
+app = FastAPI(
+    # Default: docs deshabilitados (mas seguro detras de un tunel publico).
+    # Set ENABLE_DOCS=true en dev para reactivar /docs, /redoc, /openapi.json.
+    docs_url="/docs" if config.ENABLE_DOCS else None,
+    redoc_url="/redoc" if config.ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if config.ENABLE_DOCS else None,
+)
 client = Anthropic()
 
 if not config.MY_WHATSAPP:

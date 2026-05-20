@@ -3,7 +3,7 @@
 # Detecta docker compose v2 (`docker compose`) o v1 (`docker-compose`).
 COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
-.PHONY: help up down logs ps build rebuild migrate shell psql test test-docker smoke clean backup restore
+.PHONY: help up down logs ps build rebuild migrate shell psql test test-docker smoke clean backup restore tunnel-up tunnel-down tunnel-logs tunnel-status
 
 help: ## Mostrar comandos disponibles
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -67,3 +67,17 @@ restore: ## Restaurar backup: make restore FILE=backups/wpp_xxx.sql.gz
 	@test -n "$(FILE)" || (echo "uso: make restore FILE=backups/wpp_xxx.sql.gz"; exit 2)
 	@test -f "$(FILE)" || (echo "no existe: $(FILE)"; exit 2)
 	gunzip -c "$(FILE)" | $(COMPOSE) exec -T postgres psql -U $${POSTGRES_USER:-wpp} -d $${POSTGRES_DB:-wpp}
+
+tunnel-up: ## Levantar stack + cloudflared (requiere CF_TUNNEL_TOKEN en .env)
+	$(COMPOSE) --profile tunnel up -d --build
+
+tunnel-down: ## Bajar solo el contenedor cloudflared (web/postgres siguen)
+	$(COMPOSE) stop cloudflared && $(COMPOSE) rm -f cloudflared
+
+tunnel-logs: ## Tail de logs de cloudflared
+	$(COMPOSE) logs -f --tail=100 cloudflared
+
+tunnel-status: ## Chequeo del tunel: dominio publico responde a /health
+	@test -n "$$PUBLIC_WEBHOOK_HOST" || (echo "PUBLIC_WEBHOOK_HOST vacio en .env"; exit 2)
+	@echo "→ https://$$PUBLIC_WEBHOOK_HOST/health"
+	@curl -sS "https://$$PUBLIC_WEBHOOK_HOST/health" | python -m json.tool

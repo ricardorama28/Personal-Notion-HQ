@@ -64,6 +64,26 @@ services:
       retries: 3
       start_period: 30s
 
+  # ----------------------------------------------------------------------
+  # Cloudflare Tunnel (Fase E). Opcional: solo arranca con --profile tunnel.
+  # Asi `make up` sigue siendo solo postgres+web; `make tunnel-up` agrega
+  # cloudflared. El tunel se conecta a `web:8000` por la red interna; nunca
+  # toca un puerto del host ni necesita abrir nada en el router.
+  # ----------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    # Si CF_TUNNEL_TOKEN esta vacio, cloudflared sale con error claro al
+    # arrancar. Compose valida el resto del archivo aunque el profile no
+    # este activo, asi que un `:?` aca rompe `docker compose config`.
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      web:
+        condition: service_healthy
+    logging: *default-logging
+    # Sin ports, sin volumenes. Solo egress saliente hacia Cloudflare:7844.
+
 volumes:
   pgdata:
     name: personal-notion-hq_pgdata

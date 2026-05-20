@@ -118,3 +118,49 @@ def test_makefile_has_backup_targets():
     text = (ROOT / "Makefile").read_text()
     assert "backup:" in text
     assert "restore:" in text
+
+
+# ---------- Fase E ----------
+
+def test_compose_has_cloudflared_service_with_profile():
+    """cloudflared debe existir y estar bajo profile tunnel: no arranca por
+    defecto, solo con `--profile tunnel`."""
+    try:
+        import yaml
+    except ImportError:
+        text = (ROOT / "docker-compose.yml").read_text()
+        assert "cloudflared:" in text
+        assert "profiles:" in text and "tunnel" in text
+        return
+    data = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    cf = data["services"].get("cloudflared")
+    assert cf is not None, "falta el servicio cloudflared"
+    assert "tunnel" in cf.get("profiles", []), \
+        "cloudflared debe estar gateado por profile 'tunnel'"
+    # apunta al servicio interno, no a host puerto
+    assert cf.get("ports") in (None, []), \
+        "cloudflared no debe exponer puertos al host"
+    # depende de que web este healthy
+    dep = cf.get("depends_on", {})
+    assert "web" in dep
+    # restart automatico
+    assert cf.get("restart") == "unless-stopped"
+    # comando referencia el token via env
+    cmd = cf.get("command") or ""
+    if isinstance(cmd, list):
+        cmd = " ".join(cmd)
+    assert "CF_TUNNEL_TOKEN" in cmd
+
+
+def test_makefile_has_tunnel_targets():
+    text = (ROOT / "Makefile").read_text()
+    for tgt in ("tunnel-up:", "tunnel-down:", "tunnel-logs:",
+                "tunnel-status:"):
+        assert tgt in text, f"falta target {tgt} en Makefile"
+
+
+def test_env_example_has_cf_tunnel_vars():
+    text = (ROOT / ".env.example").read_text()
+    assert "CF_TUNNEL_TOKEN=" in text
+    assert "PUBLIC_WEBHOOK_HOST=" in text
+    assert "ENABLE_DOCS=" in text

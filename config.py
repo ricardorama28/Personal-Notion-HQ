@@ -39,6 +39,10 @@ TWILIO_VALIDATE = _bool("TWILIO_VALIDATE", default=True)
 # Vacio = endpoints deshabilitados (404). Asi el default es el mas seguro.
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
+# /docs, /redoc y /openapi.json de FastAPI. Default: deshabilitados (mas
+# seguro en self-hosted con tunel publico). En dev local, ENABLE_DOCS=true.
+ENABLE_DOCS = _bool("ENABLE_DOCS", default=False)
+
 # ---------- Notion ----------
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 TASKS_DB_ID = os.environ.get("TASKS_DB_ID", "")

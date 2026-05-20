@@ -476,6 +476,182 @@ docker volume create wpp_restore_test
 # correr `make restore` contra el. Si los datos quedan ok, listo.
 ```
 
+## Cloudflare Tunnel (Fase E)
+
+Expone el webhook FastAPI corriendo en tu PC al mundo, sin abrir puertos
+del router y manteniendo Postgres aislado. Twilio le pega al hostname
+publico de Cloudflare; Cloudflare le habla a `web:8000` por la red
+interna del compose.
+
+### Por que Cloudflare Tunnel y no un puerto del router
+
+- No abre puertos en tu router (ni en el ISP NAT).
+- TLS termina en Cloudflare → no necesitas certificado en la PC.
+- Si tu IP cambia (DHCP dinamico), no importa.
+- Tu PC iniciar conexion saliente a Cloudflare:7844, no expone nada
+  entrante.
+- Free tier alcanza para un webhook personal de WhatsApp.
+
+### Setup paso a paso
+
+#### 1. Crear el tunel en Cloudflare
+
+1. Iniciar sesion en https://one.dash.cloudflare.com (Zero Trust).
+2. **Networks → Tunnels → Create a tunnel**.
+3. Tipo: **Cloudflared**. Nombre: `personal-notion-hq` (o como quieras).
+4. Copiar el **token** de la pantalla "Install and run a connector"
+   (es un string largo `eyJ...`).
+5. En **Public Hostnames**, agregar:
+   - **Subdomain**: `webhook` (o el que prefieras).
+   - **Domain**: un dominio que tengas en Cloudflare.
+   - **Service Type**: `HTTP`.
+   - **URL**: `web:8000`  ← el hostname del servicio compose, **no** localhost.
+
+#### 2. Configurar `.env`
+
+```bash
+CF_TUNNEL_TOKEN=eyJhIjoi...     # el token del paso 1
+PUBLIC_WEBHOOK_HOST=webhook.tudominio.com
+TWILIO_VALIDATE=true            # obligatorio antes de exponer
+TWILIO_AUTH_TOKEN=...           # obligatorio
+ADMIN_TOKEN=...                 # generar con secrets.token_urlsafe(32)
+ENABLE_DOCS=false               # default; no exponer Swagger UI
+SESSIONS_BACKEND=postgres
+POSTGRES_PASSWORD=...           # cambialo!
+```
+
+#### 3. Levantar con el profile tunnel
+
+```bash
+make tunnel-up                  # postgres + web + cloudflared
+# equivalente:
+# docker compose --profile tunnel up -d --build
+```
+
+`make up` (sin `tunnel-`) sigue funcionando para dev sin tunel: solo
+levanta postgres+web.
+
+#### 4. Verificar que el tunel conecta
+
+```bash
+make tunnel-logs                # esperar "Registered tunnel connection"
+make tunnel-status              # GET https://$PUBLIC_WEBHOOK_HOST/health
+# Esperable: {"ok": true}
+```
+
+Si `tunnel-status` no responde:
+- `make tunnel-logs` — buscar errores de auth (`401 invalid token`),
+  resolucion DNS o problemas de hostname.
+- Verificar que el hostname en Cloudflare apunta a `web:8000` (no `localhost`).
+- Verificar que `web` esta `healthy`: `make ps`.
+
+#### 5. Configurar Twilio
+
+**Sandbox** (mientras pruebas):
+1. https://console.twilio.com → Develop → Messaging → Try it out → Send a
+   WhatsApp message → Sandbox settings.
+2. **When a message comes in**: `https://webhook.tudominio.com/webhook`.
+3. **Method**: `POST`.
+
+**Production** (cuando estes listo):
+- En la Sender de WhatsApp Business: same URL, same method. NO se
+  modifica automaticamente desde aca — es un paso manual deliberado.
+
+### Checklist obligatorio antes de apuntar Twilio
+
+| Check | Como verificar |
+|---|---|
+| `TWILIO_VALIDATE=true` en `.env` | `grep TWILIO_VALIDATE .env` |
+| `TWILIO_AUTH_TOKEN` seteado | logs no muestran warning "TWILIO_AUTH_TOKEN esta vacio" |
+| `MY_WHATSAPP` correcto | `grep MY_WHATSAPP .env` |
+| `ADMIN_TOKEN` seteado | `make shell` → `echo $ADMIN_TOKEN` |
+| `/health` publico devuelve `{"ok": true}` solo | `curl https://$PUBLIC_WEBHOOK_HOST/health` |
+| `/health/internal` requiere token | `curl https://$PUBLIC_WEBHOOK_HOST/health/internal` → 404 |
+| `/diag` requiere token | `curl https://$PUBLIC_WEBHOOK_HOST/diag` → 404 |
+| `/docs` deshabilitado | `curl https://$PUBLIC_WEBHOOK_HOST/docs` → 404 |
+| Postgres no expone puerto | `ss -tlnp \| grep 5432` → vacio |
+| Backup probado | `make backup` corrio al menos 1 vez; restore probado en volumen test |
+| Logs con rotacion | `docker inspect personal-notion-hq-web-1 \| grep max-size` |
+
+### Smoke checks end-to-end
+
+```bash
+# 1) Health local
+curl -s http://localhost:8000/health
+# {"ok": true}
+
+# 2) Health publico (por dominio Cloudflare)
+make tunnel-status
+
+# 3) Health interno publico con token
+curl -sH "X-Admin-Token: $ADMIN_TOKEN" \
+  https://$PUBLIC_WEBHOOK_HOST/health/internal | python -m json.tool
+
+# 4) Webhook simulado (con TWILIO_VALIDATE=false, solo dev)
+WEBHOOK_URL=http://localhost:8000/webhook bash scripts/simulate_webhook.sh "gasto 100 cafe"
+
+# 5) Mensaje real desde WhatsApp
+#    Mandate al sandbox un "gasto 450 super" y verifica:
+make logs                                           # ves el POST de Twilio
+make psql -c "select sid, body from messages order by received_at desc limit 5;"
+# La fila tiene sid (Twilio MessageSid), body, direction.
+
+# 6) Idempotencia: si Twilio reintenta el mismo MessageSid
+#    (no se puede simular real-real sin replay), igualmente:
+make psql -c "select sid, count(*) from messages group by sid having count(*) > 1;"
+# Esperable: cero filas. Idempotencia OK.
+
+# 7) Logs del tunel
+make tunnel-logs
+# esperar: "Registered tunnel connection", "Connection registered"
+```
+
+### Operaciones del tunel
+
+```bash
+make tunnel-up         # arrancar todo + tunel
+make tunnel-down       # bajar SOLO el tunel (postgres+web siguen corriendo)
+make tunnel-logs       # tail de cloudflared
+make tunnel-status     # curl al hostname publico
+
+# Rotar token: generar nuevo en Cloudflare, actualizar .env, restart:
+docker compose restart cloudflared
+```
+
+### Volver a Railway si el tunel falla
+
+El bot sigue corriendo en Railway en paralelo. Para failover:
+
+1. **Twilio**: cambiar la URL del webhook al endpoint Railway (anotalo
+   en algun lado para tenerlo a mano):
+   `https://<tu-app>.up.railway.app/webhook`
+2. **Railway** debe tener en sus variables:
+   ```
+   NOTION_TOKEN, ANTHROPIC_API_KEY, TWILIO_AUTH_TOKEN, MY_WHATSAPP
+   TWILIO_VALIDATE=true
+   SESSIONS_BACKEND=file              # el simple, sin Postgres
+   # IDs de databases de Notion (los mismos)
+   ```
+3. Diferencias entre Railway (file) y PC (postgres):
+   - Sesiones en `/tmp` se pierden con cada redeploy de Railway. No es
+     critico: el primer mensaje despues reconstruye contexto.
+   - No hay `messages`, `agent_runs`, `cost_logs` en Railway (solo
+     existen en Postgres de la PC). Mientras esta Railway atendiendo,
+     hay un hueco en esas tablas. Cuando vuelvas a la PC, los proximos
+     mensajes se siguen registrando; los del intervalo Railway quedan
+     en logs/Notion solamente.
+   - `/cost` en Railway lee del JSONL (`/tmp/wpp_cost_log.jsonl`, tambien
+     volatil). Pierde el detalle, no es bloqueante.
+4. Cuando el tunel/PC vuelve, repetir paso 1 apuntando a
+   `https://$PUBLIC_WEBHOOK_HOST/webhook`.
+
+### Por que el tunel no expone Postgres ni `/data`
+
+Cloudflare Tunnel solo enruta el hostname publico hacia el `service`
+que pusiste en el dashboard (`web:8000`). Postgres, `/health/internal`,
+`/diag` y el volumen `/data` no son alcanzables desde el tunel. Si
+alguien escanea el dominio publico solo encuentra `/webhook` y `/health`.
+
 ## Tests
 
 ```bash
@@ -510,10 +686,10 @@ personal autoalojado. Cada fase entrega valor por si sola.
   `SESSIONS_BACKEND=file|postgres`. Tablas `messages`, `sessions`,
   `agent_runs`, `tool_calls`, `cost_logs`, `pending_confirmations`.
   SQLAlchemy async + Alembic.
-- **Fase D** (actual): Docker Compose local/self-hosted (`web` +
-  `postgres`, opcionales: `redis`, `worker`, `cloudflared` para Fase E).
-- **Fase E**: Webhook publico desde PC propia via Cloudflare Tunnel.
-  Railway queda como fallback documentado.
+- **Fase D**: Docker Compose local/self-hosted (`web` + `postgres`,
+  opcional `cloudflared` activable con profile).
+- **Fase E** (actual): Webhook publico desde PC propia via Cloudflare
+  Tunnel. Railway queda como fallback documentado.
 - **Fase F**: Orchestrator central con `ActionPlan` y confirmaciones
   para acciones destructivas.
 - **Fase G**: Agentes especializados (Capture / Planner / Writer /

@@ -202,6 +202,25 @@ def test_diag_with_token_returns_detail(client, fake_notion, monkeypatch):
     assert "token_set" in body  # diagnostics() result shape
 
 
+def test_docs_disabled_by_default(client):
+    """ENABLE_DOCS=false (default en conftest) → /docs, /redoc y
+    /openapi.json deben devolver 404 (no expuestos al tunel publico)."""
+    tc, _ = client
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        r = tc.get(path)
+        assert r.status_code == 404, f"{path} no deberia estar accesible"
+
+
+def test_config_enable_docs_default_false(monkeypatch):
+    monkeypatch.delenv("ENABLE_DOCS", raising=False)
+    import importlib, config
+    importlib.reload(config)
+    assert config.ENABLE_DOCS is False
+    # restaurar para no romper otros tests
+    monkeypatch.setenv("ENABLE_DOCS", "false")
+    importlib.reload(config)
+
+
 def test_admin_token_uses_constant_time_compare(monkeypatch):
     """_check_admin_token usa hmac.compare_digest (sin timing leaks)."""
     import config, main
