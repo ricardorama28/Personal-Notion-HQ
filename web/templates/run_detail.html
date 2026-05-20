@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id }}{% endblock %}
+{% block main %}
+<div class="px-6 py-4 overflow-y-auto">
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <div class="text-xs text-slate-500 font-mono">{{ run.id }}</div>
+      <h1 class="text-xl font-semibold">{{ run.intent or '?' }}</h1>
+    </div>
+    {% if run.async_state == 'async_error' and (run.safety_level in (None, 'safe')) %}
+      <button hx-post="/admin/runs/{{ run.id }}/retry"
+              hx-confirm="Reintentar este run safe en background?"
+              class="px-3 py-1 bg-emerald-600 text-white rounded text-sm">
+        Reintentar
+      </button>
+    {% endif %}
+  </div>
+  <div class="grid grid-cols-2 gap-4 text-sm mb-4">
+    <div><span class="text-slate-500">route</span>: <span class="chip-default">{{ run.route }}</span></div>
+    <div><span class="text-slate-500">safety</span>: <span class="chip-{{ run.safety_level or 'default' }}">{{ run.safety_level or '—' }}</span></div>
+    <div><span class="text-slate-500">model</span>: <span class="font-mono text-xs">{{ run.model or '—' }}</span></div>
+    <div><span class="text-slate-500">async_state</span>: {{ run.async_state or '—' }}</div>
+    <div><span class="text-slate-500">tokens</span>: {{ run.input_tokens }}↑ / {{ run.output_tokens }}↓ · iter {{ run.iterations }}</div>
+    <div><span class="text-slate-500">session</span>: <a class="font-mono text-xs hover:underline" href="/admin/c/{{ run.session_key }}">{{ run.session_key }}</a></div>
+    <div><span class="text-slate-500">started</span>: {{ run.started_at | fmt_ts }}</div>
+    <div><span class="text-slate-500">finished</span>: {{ run.finished_at | fmt_ts }}</div>
+    {% if run.confirmed_from %}<div class="col-span-2"><span class="text-slate-500">confirmed_from</span>: <a class="font-mono text-xs hover:underline" href="/admin/runs/{{ run.confirmed_from }}">{{ run.confirmed_from }}</a></div>{% endif %}
+  </div>
+
+  {% if run.reply %}
+  <div class="mb-4">
+    <h3 class="text-xs font-semibold uppercase text-slate-500">Respuesta</h3>
+    <pre class="bg-white border rounded p-3 text-sm whitespace-pre-wrap">{{ run.reply }}</pre>
+  </div>
+  {% endif %}
+  {% if run.error %}
+  <div class="mb-4">
+    <h3 class="text-xs font-semibold uppercase text-rose-600">Error</h3>
+    <pre class="bg-rose-50 border border-rose-200 rounded p-3 text-sm whitespace-pre-wrap">{{ run.error }}</pre>
+  </div>
+  {% endif %}
+  <div class="mb-4">
+    <h3 class="text-xs font-semibold uppercase text-slate-500">ActionPlan</h3>
+    <pre class="bg-white border rounded p-3 text-xs overflow-x-auto">{{ run.plan | tojson(indent=2) }}</pre>
+  </div>
+  {% if run.tool_calls %}
+  <div>
+    <h3 class="text-xs font-semibold uppercase text-slate-500">Tool calls ({{ run.tool_calls|length }})</h3>
+    {% for tc in run.tool_calls %}
+      <div class="border rounded p-3 mb-2 bg-white">
+        <div class="flex items-center justify-between">
+          <span class="font-mono text-sm">{{ tc.name }}</span>
+          <span class="chip-{{ 'safe' if tc.ok else 'unsafe' }}">{{ 'ok' if tc.ok else 'error' }}</span>
+        </div>
+        <details class="text-xs text-slate-600 mt-1">
+          <summary class="cursor-pointer">args</summary>
+          <pre class="bg-slate-50 p-2 rounded mt-1">{{ tc.args | tojson(indent=2) }}</pre>
+        </details>
+        <details class="text-xs text-slate-600 mt-1">
+          <summary class="cursor-pointer">result</summary>
+          <pre class="bg-slate-50 p-2 rounded mt-1">{{ tc.result | tojson(indent=2) }}</pre>
+        </details>
+        {# Si el resultado trae un id de notion (page_id, task_id, ...), ofrecer link Notion. #}
+        {% set ids = [] %}
+        {% if tc.result %}
+          {% for k, v in tc.result.items() %}
+            {% if k.endswith('_id') and v %}
+              {% set _ = ids.append((k, v)) %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {% if ids %}
+          <div class="mt-1 text-xs">
+            {% for k, v in ids %}
+              <a href="https://www.notion.so/{{ v|replace('-', '') }}" target="_blank"
+                 class="text-sky-700 hover:underline mr-2">{{ k }} ↗</a>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

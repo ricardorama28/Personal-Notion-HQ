@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Agentes{% endblock %}
+{% block main %}
+<div class="px-6 py-4 overflow-y-auto">
+  <h1 class="text-xl font-semibold mb-4">Agentes y tools</h1>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+    {% for a in agents %}
+      <div class="border rounded p-3 bg-white">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold">{{ a.name }}</h2>
+          <span class="font-mono text-xs text-slate-500">{{ a.model }}</span>
+        </div>
+        <div class="mt-2 text-xs text-slate-600 whitespace-pre-wrap">{{ a.prompt_summary }}</div>
+        <div class="mt-2 flex flex-wrap gap-1">
+          {% for t in a.tools %}
+            <span class="chip-default">{{ t }}</span>
+          {% endfor %}
+          {% if not a.tools %}<span class="text-xs text-slate-400">sin tools</span>{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <h2 class="text-lg font-semibold mb-2">Uso de tools (7d)</h2>
+  <table class="w-full text-sm">
+    <thead class="text-xs uppercase text-slate-500 border-b">
+      <tr><th class="text-left py-2">tool</th><th>total</th><th>ok</th><th>errores</th></tr>
+    </thead>
+    <tbody>
+      {% for t in tool_usage %}
+        <tr class="border-b">
+          <td class="py-2 font-mono text-xs">{{ t.name }}</td>
+          <td>{{ t.n }}</td>
+          <td class="text-emerald-700">{{ t.ok }}</td>
+          <td class="text-rose-700">{{ t.err }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="py-8 text-center text-slate-400">Sin tool_calls registradas</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

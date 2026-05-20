@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Inicio{% endblock %}
+{% block main %}
+  <div class="flex-1 flex items-center justify-center">
+    <div class="text-center max-w-lg">
+      <h1 class="text-2xl font-semibold text-slate-900 mb-2">Command Center</h1>
+      <p class="text-slate-600 mb-6">
+        Chat web sobre el mismo orquestador que WhatsApp. Cada sesión usa
+        router → ActionPlan → agentes/tools. Confirmaciones, async y
+        políticas de seguridad funcionan igual.
+      </p>
+      <form method="post" action="/admin/sessions/new">
+        <button class="px-4 py-2 rounded bg-slate-900 text-white hover:bg-slate-700">
+          Nueva sesión
+        </button>
+      </form>
+      <div class="mt-8 text-left grid grid-cols-2 gap-2 text-sm text-slate-600">
+        <a class="px-3 py-2 border rounded hover:bg-slate-50" href="/admin/runs">→ Runs recientes</a>
+        <a class="px-3 py-2 border rounded hover:bg-slate-50" href="/admin/agents">→ Agentes y tools</a>
+        <a class="px-3 py-2 border rounded hover:bg-slate-50" href="/admin/costs">→ Costos</a>
+        <a class="px-3 py-2 border rounded hover:bg-slate-50" href="/admin/alerts">→ Alertas</a>
+      </div>
+    </div>
+  </div>
+{% endblock %}

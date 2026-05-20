@@ -1,0 +1,97 @@
+name: personal-notion-hq
+
+# Rotacion de logs por defecto en todos los servicios: 10 MB x 5 archivos.
+# Sin esto, los logs de uvicorn/postgres llenan disco a la larga.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    # Pin a version mayor + minor para reproducibilidad. Actualizar
+    # cambiando este tag y corriendo `make rebuild` (siempre verificar
+    # release notes de Postgres antes de mayor saltos).
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wpp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requerido en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wpp}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Postgres NO se expone al host por seguridad. Si necesitas conectarte
+    # con psql/DBeaver desde tu maquina, copiá docker-compose.override.yml.example
+    # → docker-compose.override.yml. NO commitees ese archivo.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wpp} -d ${POSTGRES_DB:-wpp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # En compose, `environment:` gana sobre `env_file:`. Forzamos la URL
+      # apuntando al servicio postgres del network interno. Si tu .env tiene
+      # SESSIONS_BACKEND=file, DATABASE_URL queda seteada pero no se usa
+      # (config.py la ignora cuando backend=file).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wpp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wpp}
+      PORT: "8000"
+    ports:
+      # Solo loopback: el puerto NO se expone a la LAN. Cloudflare Tunnel
+      # (Fase E) se va a conectar a `web:8000` por la red interna del compose,
+      # nunca al host. Si necesitás acceso desde otra maquina (poco recomendado
+      # sin TLS), cambialo en docker-compose.override.yml local.
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
+    volumes:
+      # /data persiste sessions.json y cost_log.jsonl cuando backend=file,
+      # y queda disponible para artefactos futuros (Fase G/I).
+      - appdata:/data
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ----------------------------------------------------------------------
+  # Cloudflare Tunnel (Fase E). Opcional: solo arranca con --profile tunnel.
+  # Asi `make up` sigue siendo solo postgres+web; `make tunnel-up` agrega
+  # cloudflared. El tunel se conecta a `web:8000` por la red interna; nunca
+  # toca un puerto del host ni necesita abrir nada en el router.
+  # ----------------------------------------------------------------------
+  cloudflared:
+    # Pin a version concreta para evitar regresiones en upgrades automaticos.
+    # Para actualizar: ver https://github.com/cloudflare/cloudflared/releases
+    # y bumpear este tag. `make tunnel-up` rebuildea el contenedor.
+    image: cloudflare/cloudflared:2024.10.0
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    # Si CF_TUNNEL_TOKEN esta vacio, cloudflared sale con error claro al
+    # arrancar. Compose valida el resto del archivo aunque el profile no
+    # este activo, asi que un `:?` aca rompe `docker compose config`.
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      web:
+        condition: service_healthy
+    logging: *default-logging
+    # Sin ports, sin volumenes. Solo egress saliente hacia Cloudflare:7844.
+
+volumes:
+  pgdata:
+    name: personal-notion-hq_pgdata
+  appdata:
+    name: personal-notion-hq_appdata
