@@ -3,12 +3,13 @@ FastAPI webhook que recibe mensajes de WhatsApp via Twilio,
 los procesa con Claude + tools, y responde por TwiML.
 """
 import asyncio
+import hmac
 import json
 import logging
 import re
 
 from anthropic import Anthropic
-from fastapi import FastAPI, Form, Request, Response
+from fastapi import FastAPI, Form, Header, Request, Response
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 
@@ -32,6 +33,11 @@ if not config.MY_WHATSAPP:
     log.warning("MY_WHATSAPP no esta seteada: la app va a rechazar todos los mensajes hasta que la configures")
 if config.TWILIO_VALIDATE and not config.TWILIO_AUTH_TOKEN:
     log.warning("TWILIO_VALIDATE=true pero TWILIO_AUTH_TOKEN esta vacio: vas a rechazar todos los webhooks")
+if not config.TWILIO_VALIDATE:
+    log.warning("⚠ TWILIO_VALIDATE=false — el webhook NO valida firma. SOLO para tests locales; "
+                "NUNCA dejes esto asi cuando expongas con Cloudflare Tunnel.")
+if not config.ADMIN_TOKEN:
+    log.warning("ADMIN_TOKEN vacio: /health/internal y /diag devuelven 404 (deshabilitados).")
 
 
 def normalize_whatsapp(s: str) -> str:
@@ -348,8 +354,15 @@ async def whatsapp_webhook(request: Request,
     return _twiml(reply)
 
 
-@app.get("/health")
-async def health():
+def _check_admin_token(provided: str) -> bool:
+    """True si ADMIN_TOKEN esta seteado y matchea (constant-time)."""
+    expected = config.ADMIN_TOKEN
+    if not expected:
+        return False
+    return hmac.compare_digest(provided or "", expected)
+
+
+async def _detailed_health() -> dict:
     db_ok: bool | None = None
     db_error: str | None = None
     if db_mod.is_postgres_enabled():
@@ -374,7 +387,36 @@ async def health():
     }
 
 
+@app.get("/health")
+async def health():
+    """Endpoint publico minimo. Confirma que el proceso responde.
+
+    NO expone backend, tokens ni estado de DB — eso vive en
+    /health/internal protegido por ADMIN_TOKEN. Asi un atacante que
+    encuentre la URL del tunel no obtiene mapa de la app.
+    """
+    return {"ok": True}
+
+
+@app.get("/health/internal")
+async def health_internal(
+    x_admin_token: str = Header(default="", alias="X-Admin-Token"),
+):
+    """Detalle completo de health. Protegido por ADMIN_TOKEN.
+
+    Devuelve 404 si el token no matchea, para no revelar la existencia
+    del endpoint a scanners.
+    """
+    if not _check_admin_token(x_admin_token):
+        return Response(status_code=404, content="not found")
+    return await _detailed_health()
+
+
 @app.get("/diag")
-async def diag():
-    """Probes de lectura contra Notion para diagnosticar permisos de la integracion."""
+async def diag(
+    x_admin_token: str = Header(default="", alias="X-Admin-Token"),
+):
+    """Probes de lectura contra Notion. Protegido por ADMIN_TOKEN."""
+    if not _check_admin_token(x_admin_token):
+        return Response(status_code=404, content="not found")
     return diagnostics()

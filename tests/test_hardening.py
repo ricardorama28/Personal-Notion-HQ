@@ -117,18 +117,52 @@ async def test_cost_endpoint_uses_db_when_postgres(client, fake_notion,
 
 # ---------- /health con ping a DB ----------
 
-def test_health_file_backend(client):
+def test_health_public_is_minimal(client):
+    """El /health publico solo confirma que el proceso responde.
+
+    NO debe filtrar backend, tokens, ni estado de DB.
+    """
     tc, _ = client
     r = tc.get("/health")
     body = r.json()
+    assert body == {"ok": True}
+    # asegurarse de que NO se filtra info sensible
+    for k in ("sessions_backend", "database_ok", "twilio_validate",
+              "notion_token_set", "anthropic_key_set"):
+        assert k not in body
+
+
+def test_health_internal_without_token_returns_404(client):
+    tc, _ = client
+    r = tc.get("/health/internal")
+    assert r.status_code == 404
+
+
+def test_health_internal_with_wrong_token_returns_404(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "good")
+    tc, _ = client
+    r = tc.get("/health/internal", headers={"X-Admin-Token": "bad"})
+    assert r.status_code == 404
+
+
+def test_health_internal_with_token_returns_detail(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "good")
+    tc, _ = client
+    r = tc.get("/health/internal", headers={"X-Admin-Token": "good"})
+    assert r.status_code == 200
+    body = r.json()
     assert body["sessions_backend"] == "file"
-    assert body["database_ok"] is None  # no se intenta ping
+    assert body["database_ok"] is None
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_health_postgres_ok(client, pg_db):
+async def test_health_internal_postgres_ok(client, pg_db, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "good")
     tc, _ = client
-    r = tc.get("/health")
+    r = tc.get("/health/internal", headers={"X-Admin-Token": "good"})
     body = r.json()
     assert body["sessions_backend"] == "postgres"
     assert body["database_ok"] is True
@@ -136,17 +170,46 @@ async def test_health_postgres_ok(client, pg_db):
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_health_postgres_down(client, monkeypatch):
-    """Si el ping levanta, /health reporta database_ok=False y ok=False."""
+async def test_health_internal_postgres_down(client, monkeypatch):
     import db as db_mod, config
     monkeypatch.setattr(config, "SESSIONS_BACKEND", "postgres")
     monkeypatch.setattr(config, "DATABASE_URL", "postgresql+asyncpg://x:x@nowhere/x")
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "good")
     async def boom():
         raise RuntimeError("connection refused")
     monkeypatch.setattr(db_mod, "ping", boom)
     tc, _ = client
-    r = tc.get("/health")
+    r = tc.get("/health/internal", headers={"X-Admin-Token": "good"})
     body = r.json()
     assert body["database_ok"] is False
     assert body["database_error"] == "RuntimeError"
     assert body["ok"] is False
+
+
+def test_diag_without_token_returns_404(client, fake_notion):
+    tc, _ = client
+    r = tc.get("/diag")
+    assert r.status_code == 404
+
+
+def test_diag_with_token_returns_detail(client, fake_notion, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "good")
+    tc, _ = client
+    r = tc.get("/diag", headers={"X-Admin-Token": "good"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "token_set" in body  # diagnostics() result shape
+
+
+def test_admin_token_uses_constant_time_compare(monkeypatch):
+    """_check_admin_token usa hmac.compare_digest (sin timing leaks)."""
+    import config, main
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "secret")
+    assert main._check_admin_token("secret") is True
+    assert main._check_admin_token("secre") is False
+    assert main._check_admin_token("") is False
+    # con token vacio, siempre False (endpoints deshabilitados)
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "")
+    assert main._check_admin_token("") is False
+    assert main._check_admin_token("anything") is False

@@ -416,6 +416,66 @@ select count(*) from agent_runs; # ver corridas
 
 Si todo eso pasa, el deploy local esta OK.
 
+## Hardening pre-Fase E
+
+Antes de exponer el webhook publico (Cloudflare Tunnel), verificar:
+
+| Item | Como | Estado |
+|---|---|---|
+| Puerto web solo en loopback | `ss -tlnp \| grep 8000` → `127.0.0.1:8000` | hecho en `docker-compose.yml` |
+| Postgres NO expone puertos | `ss -tlnp \| grep 5432` → nada | hecho |
+| `TWILIO_VALIDATE=true` en `.env` | `grep TWILIO_VALIDATE .env` | manual (te avisa con WARN en logs si esta en false) |
+| `TWILIO_AUTH_TOKEN` seteado | `make shell -c 'env \| grep TWILIO_AUTH'` | manual |
+| `ADMIN_TOKEN` seteado y unico | generar: `python -c "import secrets; print(secrets.token_urlsafe(32))"` | manual |
+| `/health` publico minimo | `curl http://localhost:8000/health` → `{"ok": true}` | hecho |
+| `/health/internal` requiere token | `curl -H "X-Admin-Token: $TOKEN" .../health/internal` | hecho |
+| `/diag` requiere token | idem | hecho |
+| Logs con rotacion | `docker inspect ... \| grep max-size` | hecho (`10m × 5`) |
+| Backup periodico | `make backup`, restore probado al menos una vez | manual (cron del host) |
+
+### `/health` y `/health/internal`
+
+- `GET /health` → `{"ok": true}`. Publico, sin info sensible. Apto para el
+  healthcheck de Cloudflare Tunnel y para cualquier monitor externo.
+- `GET /health/internal` con header `X-Admin-Token: <ADMIN_TOKEN>` →
+  detalle (`sessions_backend`, `database_ok`, qué tokens estan seteados, etc).
+  Sin token o con token incorrecto, devuelve **404** (no 401) para no
+  revelar la existencia del endpoint a scanners.
+- `GET /diag` → idem `/health/internal`, hace probes de lectura contra
+  Notion.
+
+El healthcheck del Dockerfile (`scripts/healthcheck.py`) usa el endpoint
+publico, y si encuentra `ADMIN_TOKEN` en el entorno, ademas valida
+`database_ok` via `/health/internal`. Asi el compose detecta DB caida sin
+filtrar nada al mundo.
+
+### Backups de Postgres
+
+```bash
+make backup                              # backup a ./backups/wpp_YYYYMMDD_HHMMSS.sql.gz
+BACKUP_RETAIN=30 make backup             # cambiar retencion (default 14)
+BACKUP_DIR=/mnt/external make backup     # cambiar destino
+
+# Programar diario via cron del host:
+0 3 * * * cd /ruta/al/repo && make backup >> /var/log/wpp-backup.log 2>&1
+```
+
+Restore:
+
+```bash
+make restore FILE=backups/wpp_20260520_030000.sql.gz
+# El dump usa --clean --if-exists, asi que sobreescribe lo que haya.
+```
+
+Conviene probar el restore al menos una vez en un volumen aparte antes
+de confiar en los backups en serio:
+
+```bash
+docker volume create wpp_restore_test
+# crear un compose alternativo apuntando al volumen restore_test y
+# correr `make restore` contra el. Si los datos quedan ok, listo.
+```
+
 ## Tests
 
 ```bash

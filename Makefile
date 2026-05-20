@@ -3,7 +3,7 @@
 # Detecta docker compose v2 (`docker compose`) o v1 (`docker-compose`).
 COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
-.PHONY: help up down logs ps build rebuild migrate shell psql test test-docker smoke clean
+.PHONY: help up down logs ps build rebuild migrate shell psql test test-docker smoke clean backup restore
 
 help: ## Mostrar comandos disponibles
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -59,3 +59,11 @@ smoke: ## Smoke check: /health + simulacion de webhook contra el contenedor
 
 clean: ## Down + borrar volumenes (PIERDE datos de Postgres y /data)
 	$(COMPOSE) down -v
+
+backup: ## pg_dump comprimido en ./backups/ (rotacion BACKUP_RETAIN, def 14)
+	bash scripts/backup.sh
+
+restore: ## Restaurar backup: make restore FILE=backups/wpp_xxx.sql.gz
+	@test -n "$(FILE)" || (echo "uso: make restore FILE=backups/wpp_xxx.sql.gz"; exit 2)
+	@test -f "$(FILE)" || (echo "no existe: $(FILE)"; exit 2)
+	gunzip -c "$(FILE)" | $(COMPOSE) exec -T postgres psql -U $${POSTGRES_USER:-wpp} -d $${POSTGRES_DB:-wpp}

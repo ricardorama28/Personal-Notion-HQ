@@ -1,9 +1,18 @@
 name: personal-notion-hq
 
+# Rotacion de logs por defecto en todos los servicios: 10 MB x 5 archivos.
+# Sin esto, los logs de uvicorn/postgres llenan disco a la larga.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-wpp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requerido en .env}
@@ -25,6 +34,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,7 +48,11 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wpp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wpp}
       PORT: "8000"
     ports:
-      - "${WEB_PORT:-8000}:8000"
+      # Solo loopback: el puerto NO se expone a la LAN. Cloudflare Tunnel
+      # (Fase E) se va a conectar a `web:8000` por la red interna del compose,
+      # nunca al host. Si necesitás acceso desde otra maquina (poco recomendado
+      # sin TLS), cambialo en docker-compose.override.yml local.
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
     volumes:
       # /data persiste sessions.json y cost_log.jsonl cuando backend=file,
       # y queda disponible para artefactos futuros (Fase G/I).

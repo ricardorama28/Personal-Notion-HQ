@@ -83,3 +83,38 @@ def test_env_example_has_compose_vars_but_no_secrets():
     assert "POSTGRES_DB" in text and "WEB_PORT" in text
     # placeholder, no contrasena real
     assert "change_me" in text
+
+
+# ---------- Hardening pre-Fase E ----------
+
+def test_compose_web_port_binds_loopback_only():
+    """El puerto del web tiene que estar prefijeado con 127.0.0.1 para que
+    no quede abierto a la LAN antes del tunel."""
+    text = (ROOT / "docker-compose.yml").read_text()
+    assert "127.0.0.1:${WEB_PORT" in text, \
+        "el puerto del web debe bindear solo a loopback"
+
+
+def test_compose_has_log_rotation():
+    text = (ROOT / "docker-compose.yml").read_text()
+    assert "max-size" in text and "max-file" in text
+
+
+def test_env_example_has_admin_token_placeholder():
+    text = (ROOT / ".env.example").read_text()
+    assert "ADMIN_TOKEN=" in text
+
+
+def test_backup_script_exists_and_executable():
+    p = ROOT / "scripts" / "backup.sh"
+    assert p.exists()
+    assert (p.stat().st_mode & 0o111), "backup.sh no es ejecutable"
+    text = p.read_text()
+    assert "pg_dump" in text
+    assert "BACKUP_RETAIN" in text
+
+
+def test_makefile_has_backup_targets():
+    text = (ROOT / "Makefile").read_text()
+    assert "backup:" in text
+    assert "restore:" in text

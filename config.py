@@ -34,6 +34,11 @@ MY_WHATSAPP = os.environ.get("MY_WHATSAPP", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_VALIDATE = _bool("TWILIO_VALIDATE", default=True)
 
+# ---------- Admin ----------
+# Token compartido para endpoints sensibles (/health/internal, /diag).
+# Vacio = endpoints deshabilitados (404). Asi el default es el mas seguro.
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+
 # ---------- Notion ----------
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 TASKS_DB_ID = os.environ.get("TASKS_DB_ID", "")
