@@ -2,8 +2,10 @@
 FastAPI webhook que recibe mensajes de WhatsApp via Twilio,
 los procesa con Claude + tools, y responde por TwiML.
 """
+import asyncio
 import json
 import logging
+import re
 
 from anthropic import Anthropic
 from fastapi import FastAPI, Form, Request, Response
@@ -12,6 +14,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 import config
 import cost_log
+import db as db_mod
 import notion_ops as ops
 import repos
 import router as wpp_router
@@ -135,6 +138,24 @@ def run_agent(messages: list, model: str,
         )
 
 
+_ERROR_LINE_RE = re.compile(r"^error: ([A-Za-z_][A-Za-z0-9_]*):.*", re.DOTALL)
+
+
+def _sanitize_for_persist(text: str, *, limit: int = 500) -> str:
+    """Si el texto es un error de excepcion, persistimos solo el tipo (no el
+    detalle, que puede incluir paths, queries, valores). Caso comun:
+        'error: RuntimeError: secret leaked in message' → 'error: RuntimeError'
+    El reply hacia el usuario por TwiML mantiene el detalle (lo necesita
+    para debug); solo se sanitiza al guardar en `messages`.
+    """
+    if not text:
+        return ""
+    m = _ERROR_LINE_RE.match(text)
+    if m:
+        return f"error: {m.group(1)}"
+    return text[:limit]
+
+
 def _render_rule_result(intent: str, result: dict) -> str:
     """Texto corto para responder cuando el router ejecuta tools sin LLM."""
     if "error" in result:
@@ -201,11 +222,15 @@ async def whatsapp_webhook(request: Request,
         return _twiml("✓ sesion limpia")
 
     if body_norm in {"/cost", "/status"}:
-        s = cost_log.summary(last_n_days=7)
+        if db_mod.is_postgres_enabled():
+            s = await cost_log.summary_db(last_n_days=7)
+        else:
+            s = cost_log.summary(last_n_days=7)
         cost_log.log_event(route="admin", intent="cost_query", sid=MessageSid)
         lines = [
             f"Costo 7d: USD {s['total_usd']:.4f} ({s['events']} eventos)",
             f"Tokens in/out: {s['input_tokens']}/{s['output_tokens']}",
+            f"Fuente: {s.get('source', 'jsonl')}",
         ]
         if s["by_route"]:
             lines.append("Rutas: " + ", ".join(
@@ -312,8 +337,10 @@ async def whatsapp_webhook(request: Request,
         reply=reply,
     )
 
-    # outbound persistido (solo si backend=postgres)
-    await repos.messages.add(sid=MessageSid, sender=From, body=reply,
+    # outbound persistido (solo si backend=postgres) — sanitizado para no
+    # guardar detalles de excepcion en `messages.body`.
+    await repos.messages.add(sid=MessageSid, sender=From,
+                             body=_sanitize_for_persist(reply),
                              direction="outbound")
 
     await repos.sessions.save(From, history[-config.HISTORY_WINDOW:])
@@ -323,8 +350,18 @@ async def whatsapp_webhook(request: Request,
 
 @app.get("/health")
 async def health():
+    db_ok: bool | None = None
+    db_error: str | None = None
+    if db_mod.is_postgres_enabled():
+        try:
+            await asyncio.wait_for(db_mod.ping(), timeout=1.5)
+            db_ok = True
+        except Exception as e:
+            db_ok = False
+            db_error = type(e).__name__
+            log.warning("DB ping fallo: %s", e)
     return {
-        "ok": True,
+        "ok": True if db_ok is not False else False,
         "my_whatsapp_set": bool(config.MY_WHATSAPP),
         "anthropic_key_set": bool(config.ANTHROPIC_API_KEY),
         "notion_token_set": bool(config.NOTION_TOKEN),
@@ -332,6 +369,8 @@ async def health():
         "twilio_auth_token_set": bool(config.TWILIO_AUTH_TOKEN),
         "sessions_backend": config.SESSIONS_BACKEND,
         "database_url_set": bool(config.DATABASE_URL),
+        "database_ok": db_ok,
+        "database_error": db_error,
     }
 
 

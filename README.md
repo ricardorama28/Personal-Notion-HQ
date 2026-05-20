@@ -200,6 +200,37 @@ alembic history
 alembic revision -m "descripcion del cambio" --autogenerate
 ```
 
+#### Migraciones en entorno dockerizado
+
+`scripts/migrate.sh` esta pensado para ser invocado como paso previo al
+arranque del servidor. Hace:
+
+1. Si `SESSIONS_BACKEND != postgres` → exit 0 (no requiere DB).
+2. Si falta `DATABASE_URL` con backend postgres → exit 1 con mensaje.
+3. Espera hasta 30s a que Postgres responda `SELECT 1` (`asyncpg`),
+   util cuando el contenedor de la app arranca antes que el de la DB.
+4. Corre `alembic upgrade head`.
+
+En el `Dockerfile` (Fase D) el `CMD` sera algo como:
+
+```
+CMD ["sh", "-c", "scripts/migrate.sh && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+```
+
+Para entornos con multiples replicas, conviene moverlo a un init
+container/job aparte; Alembic toma un lock pero es mas limpio aislarlo.
+
+### Persistencia de archivos (sessions JSON, cost log JSONL)
+
+Los defaults son **inteligentes**:
+
+- Si `SESSIONS_FILE` / `COST_LOG_FILE` estan en el entorno, se usan.
+- Si no, se prefiere `/data/` si existe y es escribible.
+- Si `/data/` no existe (Railway, dev local sin volumen), cae a `/tmp/`.
+
+Esto deja el repo listo para Docker Compose (donde se monta un volumen
+en `/data`) sin romper Railway ni el modo local.
+
 ### Volver al backend file
 
 ```bash

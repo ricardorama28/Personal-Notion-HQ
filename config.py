@@ -62,8 +62,24 @@ if SESSIONS_BACKEND == "postgres" and not DATABASE_URL:
     )
 
 # ---------- Runtime ----------
-SESSIONS_FILE = Path(os.environ.get("SESSIONS_FILE", "/tmp/wpp_sessions.json"))
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
 HISTORY_WINDOW = int(os.environ.get("HISTORY_WINDOW", "30"))
 MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", "4096"))
-COST_LOG_FILE = Path(os.environ.get("COST_LOG_FILE", "/tmp/wpp_cost_log.jsonl"))
+
+
+def _default_path(env_name: str, filename: str) -> Path:
+    """Si la env esta seteada, usarla. Si no, preferir /data (volumen
+    persistente en Docker); cae a /tmp si /data no existe / no es escribible.
+    Asi Railway y dev local siguen igual; Compose monta /data y funciona sin
+    config extra."""
+    raw = os.environ.get(env_name)
+    if raw:
+        return Path(raw)
+    data_dir = Path("/data")
+    if data_dir.is_dir() and os.access(data_dir, os.W_OK):
+        return data_dir / filename
+    return Path("/tmp") / filename
+
+
+SESSIONS_FILE = _default_path("SESSIONS_FILE", "wpp_sessions.json")
+COST_LOG_FILE = _default_path("COST_LOG_FILE", "wpp_cost_log.jsonl")

@@ -67,6 +67,15 @@ async def create_all_for_tests() -> None:
         await conn.run_sync(models.Base.metadata.create_all)
 
 
+async def ping() -> bool:
+    """Devuelve True si la DB responde a SELECT 1. Levanta si falla."""
+    from sqlalchemy import text
+    engine = get_engine()
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
+    return True
+
+
 async def dispose() -> None:
     global _engine, _sessionmaker
     if _engine is not None:

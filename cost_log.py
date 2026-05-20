@@ -10,7 +10,7 @@ env si Anthropic los cambia.
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import config
@@ -69,7 +69,10 @@ def summary(last_n_days: int = 7) -> dict:
     """Resumen agregado del JSONL para el comando /cost."""
     path = config.COST_LOG_FILE
     if not path.exists():
-        return {"total_usd": 0.0, "events": 0, "by_model": {}, "by_route": {}}
+        return {"days": last_n_days, "events": 0,
+                "input_tokens": 0, "output_tokens": 0,
+                "total_usd": 0.0, "by_model": {}, "by_route": {},
+                "source": "jsonl"}
     cutoff = datetime.now(timezone.utc).timestamp() - last_n_days * 86400
     total = 0.0
     events = 0
@@ -102,4 +105,43 @@ def summary(last_n_days: int = 7) -> dict:
     return {"days": last_n_days, "events": events,
             "input_tokens": in_tok, "output_tokens": out_tok,
             "total_usd": round(total, 4),
-            "by_model": by_model, "by_route": by_route}
+            "by_model": by_model, "by_route": by_route,
+            "source": "jsonl"}
+
+
+async def summary_db(last_n_days: int = 7) -> dict:
+    """Como summary() pero leyendo de la tabla cost_logs. Si la DB no esta
+    habilitada o falla, cae al JSONL (mantiene compat y resiliencia)."""
+    try:
+        import db as db_mod
+        import models
+        if not db_mod.is_postgres_enabled():
+            return summary(last_n_days)
+        from sqlalchemy import select
+        cutoff = datetime.now(timezone.utc) - timedelta(days=last_n_days)
+        async with db_mod.session_scope() as s:
+            rows = (await s.execute(
+                select(models.CostLog).where(models.CostLog.ts >= cutoff)
+            )).scalars().all()
+    except Exception as e:
+        log.warning("summary_db fallo (%s), fallback a JSONL", e)
+        return summary(last_n_days)
+
+    total = 0.0
+    in_tok = 0
+    out_tok = 0
+    by_model: dict = {}
+    by_route: dict = {}
+    for r in rows:
+        total += float(r.cost_usd or 0)
+        in_tok += int(r.input_tokens or 0)
+        out_tok += int(r.output_tokens or 0)
+        m = r.model or "-"
+        by_model[m] = round(by_model.get(m, 0.0) + float(r.cost_usd or 0), 6)
+        rt = r.route or "-"
+        by_route[rt] = by_route.get(rt, 0) + 1
+    return {"days": last_n_days, "events": len(rows),
+            "input_tokens": in_tok, "output_tokens": out_tok,
+            "total_usd": round(total, 4),
+            "by_model": by_model, "by_route": by_route,
+            "source": "postgres"}

@@ -40,6 +40,7 @@ class SessionRepo:
 
     @staticmethod
     def _write_file(sessions: dict) -> None:
+        config.SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
         config.SESSIONS_FILE.write_text(json.dumps(sessions, ensure_ascii=False))
 
     async def load(self, key: str) -> list:
