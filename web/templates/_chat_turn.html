@@ -1,0 +1,58 @@
+{# Fragment HTMX: turno completo (user + asistente). Se inserta al final
+   de #chat-feed cuando el formulario se submitea. #}
+<div class="flex justify-end">
+  <div class="max-w-2xl bg-slate-900 text-white rounded-2xl rounded-tr-md px-4 py-2 whitespace-pre-wrap">
+    {{ user_text }}
+  </div>
+</div>
+<div class="flex justify-start">
+  <div class="max-w-2xl bg-white border border-slate-200 rounded-2xl rounded-tl-md px-4 py-2">
+    <div class="whitespace-pre-wrap">{{ result.reply }}</div>
+    <div class="mt-2 flex flex-wrap gap-1 text-xs">
+      {% if result.route %}
+        {% set cls = 'chip-default' %}
+        {% if result.route == 'rule' %}{% set cls = 'chip-rule' %}
+        {% elif result.route == 'blocked' %}{% set cls = 'chip-blocked' %}
+        {% elif result.route == 'capture_agent' or 'haiku' in (result.model or '') %}{% set cls = 'chip-haiku' %}
+        {% elif 'planner' in (result.route or '') or 'writer' in (result.route or '') or 'sonnet' in (result.model or '') %}{% set cls = 'chip-sonnet' %}
+        {% endif %}
+        <span class="{{ cls }}">{{ result.route }}</span>
+      {% endif %}
+      {% if result.intent %}<span class="chip-default">{{ result.intent }}</span>{% endif %}
+      {% if result.model %}<span class="chip-default">{{ result.model }}</span>{% endif %}
+      {% if result.safety_level %}<span class="chip-{{ result.safety_level }}">{{ result.safety_level }}</span>{% endif %}
+      {% if result.run_id %}<a class="chip-default hover:underline" href="/admin/runs/{{ result.run_id }}">run →</a>{% endif %}
+    </div>
+    {% if result.tool_calls %}
+      <details class="mt-2 text-xs text-slate-500">
+        <summary class="cursor-pointer">tool_calls ({{ result.tool_calls|length }})</summary>
+        <ul class="mt-1 space-y-1">
+          {% for tc in result.tool_calls %}
+            <li>
+              <span class="font-mono">{{ tc.name }}</span>
+              <pre class="bg-slate-50 p-2 rounded overflow-x-auto">{{ tc.result | tojson(indent=2) }}</pre>
+            </li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+    {% if result.plan %}
+      <details class="mt-1 text-xs text-slate-500">
+        <summary class="cursor-pointer">ActionPlan</summary>
+        <pre class="bg-slate-50 p-2 rounded overflow-x-auto">{{ result.plan | tojson(indent=2) }}</pre>
+      </details>
+    {% endif %}
+    {% if result.needs_confirmation %}
+      <div class="mt-2 flex gap-2 text-xs">
+        <form hx-post="/admin/c/{{ session_key }}/approve"
+              hx-target="#chat-feed" hx-swap="beforeend">
+          <button class="px-3 py-1 bg-emerald-600 text-white rounded">Aprobar</button>
+        </form>
+        <form hx-post="/admin/c/{{ session_key }}/cancel"
+              hx-target="#chat-feed" hx-swap="beforeend">
+          <button class="px-3 py-1 bg-slate-300 text-slate-800 rounded">Cancelar</button>
+        </form>
+      </div>
+    {% endif %}
+  </div>
+</div>

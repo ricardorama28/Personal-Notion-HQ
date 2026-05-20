@@ -951,6 +951,131 @@ Cambios estimados:
 Lo que **no** cambia: `_execute_plan`, agentes, repos, twilio_outbound,
 ActionPlan. La migracion es solo el dispatcher.
 
+## Command Center web (Fase I)
+
+UI tipo ChatGPT/Claude para usar TODO el orquestador desde el browser:
+chat web, listado de sesiones, detalle de runs con ActionPlan + tool_calls,
+costos, alertas, confirmaciones aprobar/cancelar y retry de runs safe.
+
+### Stack
+
+FastAPI + Jinja2 + HTMX + Alpine.js + Tailwind CDN. **Sin build step**.
+
+### Activar
+
+```bash
+# .env
+ADMIN_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+```
+
+Sin `ADMIN_TOKEN`, la UI devuelve 404 en todas las rutas — no expone su
+existencia a scanners.
+
+### Acceder local
+
+```bash
+make up
+# abrir en el browser:
+http://localhost:8000/admin/login?token=<ADMIN_TOKEN>
+# setea cookie httpOnly y redirige a /admin/
+```
+
+Alternativa para CLI: header `X-Admin-Token: <token>` o query `?token=`.
+
+### Acceder via Cloudflare Tunnel
+
+Si tenés el túnel activo (Fase E), la UI queda detrás de:
+
+```
+https://<PUBLIC_WEBHOOK_HOST>/admin/login?token=<ADMIN_TOKEN>
+```
+
+El túnel solo enruta tráfico HTTP al `web:8000` — Postgres sigue
+inaccesible. La cookie es `httponly`+`samesite=lax`. Cuando todo sea HTTPS
+(con el túnel ya lo es), conviene cambiar `secure=False` → `True` en
+`web/admin.py` para forzar cookie HTTPS-only.
+
+### Layout
+
+```
+┌────────────────┬───────────────────────────────────────────┬─────────────────┐
+│ sidebar izq    │ panel central                              │ sidebar der    │
+│                │                                            │                │
+│ + nueva sesion │   chat de la sesion abierta                │  sistema       │
+│ buscar         │   - burbujas user/assistant                │  alertas       │
+│ sesiones web   │   - chip de route/intent/model/safety      │  costo 7d      │
+│   key, source, │   - tool_calls desplegables                │  confirmaciones│
+│   mensajes,    │   - ActionPlan desplegable                 │  agentes       │
+│   preview      │   - tarjeta de confirmacion si aplica      │                │
+│                │   - selector de modo (Auto/Capture/...)    │                │
+│ runs · agentes │   - textarea + boton enviar                │                │
+│ costos · etc.  │                                            │                │
+└────────────────┴───────────────────────────────────────────┴─────────────────┘
+```
+
+### Cómo usar el chat web
+
+1. `+ nueva` → crea sesión con key `web:<uuid>`.
+2. Escribe en el textarea (Enter envía, Shift+Enter agrega línea).
+3. La respuesta llega como HTMX fragment al feed. Trae chips de route,
+   intent, model, safety_level y links a "run →" para ver detalle.
+4. Si el orquestador requiere confirmación (intent destructive/bulk),
+   aparece tarjeta con `[Aprobar] [Cancelar]`.
+5. Las sesiones quedan en `sessions` con `source=web` para distinguirlas
+   de las de WhatsApp.
+
+### Cómo ver sesiones/costos/agentes/tools
+
+| Vista | Ruta | Qué muestra |
+|---|---|---|
+| Index | `/admin/` | dashboard con últimas sesiones, alertas, costo 7d |
+| Sesiones | `/admin/sessions?source=web` | tabla filtrable por source |
+| Chat | `/admin/c/<key>` | conversación + runs de esa sesión |
+| Runs | `/admin/runs?async_state=async_error` | filtrable por estado |
+| Detalle | `/admin/runs/<id>` | ActionPlan, tool_calls, links Notion |
+| Agentes | `/admin/agents` | whitelist, modelo, prompt resumido, uso 7d |
+| Costos | `/admin/costs?days=30` | total + por día + por modelo + por ruta |
+| Alertas | `/admin/alerts` | async_error, blocked unsafe, confirmaciones vencidas |
+| Config | `/admin/config` | flags públicos, **sin tokens** |
+| API | `/admin/api/system` | JSON ligero, polled cada 30s desde el sidebar |
+
+### Acciones soportadas
+
+- Enviar mensaje al orquestador (reutiliza pipeline completo).
+- Crear nueva sesión.
+- Continuar sesión existente.
+- Aprobar / cancelar confirmaciones desde la UI.
+- Reintentar runs `async_error` **solo si `safety_level=safe`**.
+- Copiar respuesta (manual desde el browser).
+- Ver detalle de run completo (plan, tool_calls, errores).
+- Abrir links Notion (cuando un tool_call devuelve un `*_id`).
+- Mandar `/status`, `/cost` como mensaje del chat.
+
+### Acciones bloqueadas
+
+- Borrar datos directamente (no hay endpoint).
+- Retry de runs `destructive` / `unsafe` / `bulk` → 400.
+- Editar prompts productivos desde la UI.
+- Cambiar secrets desde la UI.
+- Enviar mensajes externos (Twilio outbound es solo el worker async).
+- Tocar tablas SQL directamente.
+- Modificar schema desde la UI.
+
+### Limitaciones actuales
+
+1. **No streaming**: el chat web hoy ejecuta sincronicamente. Si el plan
+   es async-elegible (planner/writer/research con `ASYNC_ENABLED=true`),
+   se ejecuta inline igual para el canal web; la versión async/streaming
+   queda como mejora futura (SSE).
+2. **Sin búsqueda full-text** en mensajes; solo prefijo en sidebar.
+3. **Sin pruebas E2E con browser** — solo TestClient. Para clicks reales
+   convendría Playwright en un sprint dedicado.
+4. **Cookie `secure=False`** por compat con localhost HTTP. Antes de
+   abrirla públicamente vía Cloudflare, cambiarla a `True`.
+5. **Mismo proceso, mismo loop**: muchos requests web simultáneos
+   bloquean unos a otros si el plan es lento. Para multi-usuario,
+   migrar a workers (Fase H/RQ).
+
 ## Tests
 
 ```bash
@@ -997,7 +1122,10 @@ personal autoalojado. Cada fase entrega valor por si sola.
   por intent en el orquestador.
 - **Fase H** (actual): Workers async (FastAPI `BackgroundTasks` →
   `rq`+Redis cuando crezca). Default off (`ASYNC_ENABLED=false`).
-- **Fase I** (opcional): panel web `/admin` con FastAPI + Jinja2.
+- **Fase I** (actual): Command Center web `/admin` (FastAPI + Jinja2 +
+  HTMX + Alpine.js + Tailwind CDN). Chat web sobre el mismo
+  orquestador, listados de sesiones/runs/costos, confirmaciones y
+  retry safe desde la UI. Gateado por `ADMIN_TOKEN`.
 
 ## Limites del MVP
 

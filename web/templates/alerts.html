@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Alertas{% endblock %}
+{% block main %}
+<div class="px-6 py-4 overflow-y-auto">
+  <h1 class="text-xl font-semibold mb-4">Alertas y errores recientes</h1>
+  <div class="border rounded p-3 bg-white mb-6">
+    {% if alerts %}
+      <ul class="space-y-2 text-sm">
+        {% for a in alerts %}
+          <li class="flex gap-2 items-start">
+            <span class="chip-{{ 'bulk' if a.level=='warn' else 'default' }}">{{ a.level }}</span>
+            <span>{{ a.msg }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="text-center text-slate-400 py-4">Sin alertas activas 🟢</div>
+    {% endif %}
+  </div>
+  <h2 class="text-sm font-semibold uppercase text-slate-500 mb-2">Errores recientes</h2>
+  <div class="space-y-2">
+    {% for e in errors %}
+      <a href="/admin/runs/{{ e.id }}"
+         class="block border border-rose-200 bg-rose-50 rounded p-2 text-sm hover:bg-rose-100">
+        <div class="flex items-center justify-between">
+          <span class="font-mono text-xs">{{ e.id }}</span>
+          <span class="text-xs text-slate-500">{{ e.started_at | fmt_ts }}</span>
+        </div>
+        <div class="text-rose-800 mt-1 whitespace-pre-wrap">{{ e.error }}</div>
+      </a>
+    {% else %}
+      <div class="text-center text-slate-400 py-4">Sin errores recientes</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

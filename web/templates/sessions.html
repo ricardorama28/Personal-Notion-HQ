@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Sesiones{% endblock %}
+{% block main %}
+<div class="px-6 py-4">
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold">Sesiones</h1>
+    <div class="flex gap-2 text-xs">
+      <a href="/admin/sessions" class="px-2 py-1 rounded bg-slate-100">todas</a>
+      <a href="/admin/sessions?source=web" class="px-2 py-1 rounded bg-slate-100">web</a>
+      <a href="/admin/sessions?source=whatsapp" class="px-2 py-1 rounded bg-slate-100">whatsapp</a>
+    </div>
+  </div>
+  <table class="w-full text-sm">
+    <thead class="text-xs uppercase text-slate-500 border-b">
+      <tr><th class="text-left py-2">key</th><th>source</th><th>mensajes</th>
+          <th>último</th><th>preview</th></tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+        <tr class="border-b hover:bg-slate-50">
+          <td class="py-2 font-mono text-xs"><a class="hover:underline" href="/admin/c/{{ s.key }}">{{ s.key }}</a></td>
+          <td>{{ s.source }}</td>
+          <td>{{ s.n_messages }}</td>
+          <td class="text-xs text-slate-500">{{ s.last_message_at | fmt_ts }}</td>
+          <td class="text-xs text-slate-600 truncate max-w-xs">{{ s.preview }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="py-8 text-center text-slate-400">Sin sesiones</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

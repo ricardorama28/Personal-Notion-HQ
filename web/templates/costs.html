@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Costos{% endblock %}
+{% block main %}
+<div class="px-6 py-4 overflow-y-auto">
+  <h1 class="text-xl font-semibold mb-4">Costos · últimos {{ days }} días</h1>
+  <div class="grid grid-cols-3 gap-3 mb-6">
+    <div class="border rounded p-3 bg-white">
+      <div class="text-xs text-slate-500">Total</div>
+      <div class="text-2xl font-semibold">USD {{ '%.4f'|format(cost.total_usd) }}</div>
+    </div>
+    <div class="border rounded p-3 bg-white">
+      <div class="text-xs text-slate-500">Tokens</div>
+      <div class="text-lg">{{ cost.input_tokens }}↑ / {{ cost.output_tokens }}↓</div>
+    </div>
+    <div class="border rounded p-3 bg-white">
+      <div class="text-xs text-slate-500">Eventos</div>
+      <div class="text-lg">{{ cost.messages }}</div>
+    </div>
+  </div>
+  <h2 class="text-sm font-semibold uppercase text-slate-500 mb-2">Por día</h2>
+  <div class="border rounded p-2 bg-white mb-6">
+    {% if cost.by_day %}
+      <div class="flex items-end gap-1 h-32">
+        {% set max_v = (cost.by_day | map(attribute=1) | max) or 0.0001 %}
+        {% for d, v in cost.by_day %}
+          <div class="flex-1 flex flex-col items-center">
+            <div class="bg-slate-900 w-full"
+                 style="height: {{ (v / max_v * 100)|round(1) }}%"></div>
+            <div class="text-[10px] mt-1 text-slate-500">{{ d[5:] }}</div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="text-center text-slate-400 py-6">sin datos</div>
+    {% endif %}
+  </div>
+
+  <div class="grid grid-cols-2 gap-4">
+    <div>
+      <h2 class="text-sm font-semibold uppercase text-slate-500 mb-2">Por modelo</h2>
+      <table class="w-full text-sm">
+        {% for k, v in cost.by_model.items() %}
+          <tr class="border-b"><td class="py-1 font-mono text-xs">{{ k }}</td><td class="text-right">USD {{ '%.4f'|format(v) }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+    <div>
+      <h2 class="text-sm font-semibold uppercase text-slate-500 mb-2">Por ruta</h2>
+      <table class="w-full text-sm">
+        {% for k, v in cost.by_route.items() %}
+          <tr class="border-b"><td class="py-1 font-mono text-xs">{{ k }}</td><td class="text-right">{{ v }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

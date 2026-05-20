@@ -20,6 +20,11 @@ import models
 log = logging.getLogger("wpp.repos")
 
 
+def _infer_source(key: str) -> str:
+    """web:<uuid> → 'web'; resto → 'whatsapp'."""
+    return "web" if (key or "").startswith("web:") else "whatsapp"
+
+
 # ---------- Sessions ----------
 
 class SessionRepo:
@@ -50,15 +55,22 @@ class SessionRepo:
                 return list(row.history) if row else []
         return self._read_file().get(key, [])
 
-    async def save(self, key: str, history: list) -> None:
+    async def save(self, key: str, history: list,
+                   source: Optional[str] = None) -> None:
         if config.SESSIONS_BACKEND == "postgres":
+            now = datetime.now(timezone.utc)
             async with db.session_scope() as s:
                 row = await s.get(models.Session, key)
                 if row is None:
-                    s.add(models.Session(key=key, history=history))
+                    s.add(models.Session(key=key, history=history,
+                                         source=source or _infer_source(key),
+                                         last_message_at=now))
                 else:
                     row.history = history
-                    row.updated_at = datetime.now(timezone.utc)
+                    row.updated_at = now
+                    row.last_message_at = now
+                    if source:
+                        row.source = source
             return
         sessions = self._read_file()
         sessions[key] = history

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Chat {{ session_key }}{% endblock %}
+{% block main %}
+  <div class="border-b border-slate-200 bg-white px-4 py-2 flex items-center justify-between">
+    <div>
+      <div class="font-mono text-xs text-slate-500">{{ session_key }}</div>
+      <div class="text-sm text-slate-700">{{ history|length }} mensajes · USD {{ '%.4f'|format(cost.total_usd) }}</div>
+    </div>
+    <div class="text-xs text-slate-500">
+      <a href="/admin/runs?async_state=async_running" class="hover:underline">runs activos →</a>
+    </div>
+  </div>
+
+  <div id="chat-feed" class="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+    {% for msg in history %}
+      {% set content = msg.content %}
+      {% if msg.role == "user" %}
+        <div class="flex justify-end">
+          <div class="max-w-2xl bg-slate-900 text-white rounded-2xl rounded-tr-md px-4 py-2">
+            {{ content if content is string else "(estructura compleja)" }}
+          </div>
+        </div>
+      {% else %}
+        <div class="flex justify-start">
+          <div class="max-w-2xl bg-white border border-slate-200 rounded-2xl rounded-tl-md px-4 py-2">
+            {% if content is string %}
+              <div class="whitespace-pre-wrap">{{ content }}</div>
+            {% else %}
+              {% for block in content %}
+                {% if block.type == "text" %}
+                  <div class="whitespace-pre-wrap">{{ block.text }}</div>
+                {% elif block.type == "tool_use" %}
+                  <details class="mt-1 text-xs text-slate-500">
+                    <summary class="cursor-pointer">tool_use: {{ block.name }}</summary>
+                    <pre class="mt-1 bg-slate-50 p-2 rounded overflow-x-auto">{{ block.input | tojson(indent=2) }}</pre>
+                  </details>
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+    {% endfor %}
+    {% if pending %}
+      {% for p in pending %}
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm">
+          <div class="font-semibold text-amber-900">⚠ Confirmación pendiente</div>
+          <div class="mt-1">{{ p.payload.confirmation_reason or 'Requiere confirmación' }}</div>
+          <div class="text-xs text-amber-700 mt-1">intent={{ p.payload.intent }} · safety={{ p.payload.safety_level }}</div>
+          <div class="mt-2 flex gap-2">
+            <form method="post" action="/admin/c/{{ session_key }}/approve"
+                  hx-post="/admin/c/{{ session_key }}/approve"
+                  hx-target="#chat-feed" hx-swap="beforeend">
+              <button class="px-3 py-1 bg-emerald-600 text-white rounded text-xs">Aprobar</button>
+            </form>
+            <form method="post" action="/admin/c/{{ session_key }}/cancel"
+                  hx-post="/admin/c/{{ session_key }}/cancel"
+                  hx-target="#chat-feed" hx-swap="beforeend">
+              <button class="px-3 py-1 bg-slate-300 text-slate-800 rounded text-xs">Cancelar</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+
+  <div class="border-t border-slate-200 bg-white px-4 py-3"
+       x-data="{mode: 'auto', body: ''}">
+    <form hx-post="/admin/c/{{ session_key }}/send"
+          hx-target="#chat-feed"
+          hx-swap="beforeend"
+          x-on:htmx:after-request="body=''; document.getElementById('chat-feed').scrollTop = document.getElementById('chat-feed').scrollHeight">
+      <div class="flex items-center gap-2 mb-2">
+        <select x-model="mode" class="text-xs border border-slate-300 rounded px-2 py-1">
+          <option value="auto">Auto</option>
+          <option value="capture">Capture</option>
+          <option value="planner">Planner</option>
+          <option value="writer">Writer</option>
+          <option value="research">Research</option>
+        </select>
+        <span class="text-xs text-slate-400">El modo Auto deja decidir al orquestador.</span>
+      </div>
+      <div class="flex gap-2">
+        <textarea name="body" x-model="body" rows="2"
+                  class="flex-1 border border-slate-300 rounded px-3 py-2 text-sm"
+                  placeholder="escribí un mensaje (ej: 'gasto 450 super', 'organizame la semana', 'anotá: idea X')"
+                  x-on:keydown.enter.prevent="if(!$event.shiftKey) $el.form.requestSubmit()"
+        ></textarea>
+        <button class="px-4 py-2 bg-slate-900 text-white rounded text-sm hover:bg-slate-700"
+                x-bind:disabled="!body.trim()">Enviar</button>
+      </div>
+    </form>
+  </div>
+{% endblock %}
+
+{% block right %}
+  {{ super() }}
+  {% if runs %}
+  <div class="px-4 py-3 border-b border-slate-200">
+    <h3 class="text-xs font-semibold text-slate-500 uppercase">Runs de esta sesión</h3>
+    <ul class="mt-2 space-y-1 text-xs">
+      {% for r in runs %}
+        <li>
+          <a href="/admin/runs/{{ r.id }}" class="block hover:bg-slate-50 px-2 py-1 rounded">
+            <span class="chip-{{ 'rule' if r.route=='rule' else ('blocked' if r.route=='blocked' else ('haiku' if r.model and 'haiku' in r.model else 'sonnet')) }}">{{ r.route }}</span>
+            <span class="text-slate-600">{{ r.intent or '?' }}</span>
+            {% if r.async_state %}<span class="chip-{{ 'unsafe' if r.async_state=='async_error' else 'default' }}">{{ r.async_state }}</span>{% endif %}
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+{% endblock %}

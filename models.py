@@ -43,6 +43,11 @@ class Session(Base):
     history: Mapped[list] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    # Fase I: distinguir sesiones web vs whatsapp para la UI.
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True,
+                                                index=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class AgentRun(Base):

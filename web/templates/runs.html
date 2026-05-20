@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block main %}
+<div class="px-6 py-4">
+  <h1 class="text-xl font-semibold mb-3">Runs</h1>
+  <div class="flex gap-2 text-xs mb-3">
+    <a href="/admin/runs" class="px-2 py-1 rounded bg-slate-100">todos</a>
+    <a href="/admin/runs?async_state=async_pending" class="px-2 py-1 rounded bg-slate-100">pending</a>
+    <a href="/admin/runs?async_state=async_running" class="px-2 py-1 rounded bg-slate-100">running</a>
+    <a href="/admin/runs?async_state=async_done" class="px-2 py-1 rounded bg-slate-100">done</a>
+    <a href="/admin/runs?async_state=async_error" class="px-2 py-1 rounded bg-slate-100">error</a>
+  </div>
+  <table class="w-full text-sm">
+    <thead class="text-xs uppercase text-slate-500 border-b">
+      <tr><th class="text-left py-2">started</th><th>route</th><th>intent</th>
+          <th>model</th><th>safety</th><th>async</th><th>tokens</th></tr>
+    </thead>
+    <tbody>
+      {% for r in runs %}
+        <tr class="border-b hover:bg-slate-50">
+          <td class="py-2 text-xs text-slate-500">{{ r.started_at | fmt_ts }}</td>
+          <td><a class="hover:underline font-mono text-xs" href="/admin/runs/{{ r.id }}">{{ r.route }}</a></td>
+          <td>{{ r.intent or '?' }}</td>
+          <td class="font-mono text-xs">{{ r.model or '' }}</td>
+          <td><span class="chip-{{ r.safety_level or 'default' }}">{{ r.safety_level or '—' }}</span></td>
+          <td>{% if r.async_state %}<span class="chip-{{ 'unsafe' if r.async_state=='async_error' else 'default' }}">{{ r.async_state }}</span>{% endif %}</td>
+          <td class="text-xs text-slate-500">{{ r.input_tokens }}↑/{{ r.output_tokens }}↓</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="py-8 text-center text-slate-400">Sin runs</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

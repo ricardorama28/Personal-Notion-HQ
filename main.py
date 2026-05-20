@@ -39,6 +39,15 @@ app = FastAPI(
 )
 client = Anthropic()
 
+# Fase I: Command Center web. Lazy import para que el resto de tests
+# (que no tienen jinja2 instalado en algunos paths) no se rompan si
+# falta dep.
+try:
+    from web import router as _admin_router
+    app.include_router(_admin_router)
+except ImportError as _e:  # pragma: no cover
+    log.warning("Web UI deshabilitada: %s", _e)
+
 if not config.MY_WHATSAPP:
     log.warning("MY_WHATSAPP no esta seteada: la app va a rechazar todos los mensajes hasta que la configures")
 if config.TWILIO_VALIDATE and not config.TWILIO_AUTH_TOKEN:

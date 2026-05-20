@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Configuración{% endblock %}
+{% block main %}
+<div class="px-6 py-4 overflow-y-auto">
+  <h1 class="text-xl font-semibold mb-2">Configuración</h1>
+  <p class="text-sm text-slate-600 mb-4">
+    Solo flags públicos. Los tokens y API keys no se exponen.
+    Edición desde UI <strong>no soportada todavía</strong>; cambiar via
+    <code>.env</code> y <code>make rebuild</code>.
+  </p>
+  <table class="w-full text-sm bg-white border rounded overflow-hidden">
+    <tbody>
+      {% for k, v in flags.items() %}
+        <tr class="border-b">
+          <td class="py-2 px-3 font-mono text-xs text-slate-600">{{ k }}</td>
+          <td class="py-2 px-3">{% if v is sameas true %}🟢 true{% elif v is sameas false %}🔴 false{% else %}<span class="font-mono">{{ v }}</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
