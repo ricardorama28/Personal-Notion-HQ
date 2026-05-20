@@ -351,6 +351,12 @@ async def whatsapp_webhook(request: Request,
                 except Exception:
                     log.exception("payload de confirmacion invalido")
                     return _twiml("⚠️ confirmacion invalida, mandá de nuevo el mensaje original")
+                # defense-in-depth: unsafe nunca debe haber llegado al pop,
+                # pero por las dudas no ejecutamos si lo es.
+                if plan.safety_level == "unsafe":
+                    log.error("plan unsafe encontrado en pop_latest "
+                              "(no deberia pasar): id=%s", pending_id)
+                    return _twiml(orchestrator.BLOCKED_UNSAFE_REPLY)
                 history = await repos.sessions.load(From)
                 history.append({"role": "user", "content": Body})
                 inbox_id = None
@@ -427,29 +433,67 @@ async def whatsapp_webhook(request: Request,
                  plan.intent, plan.route, plan.safety_level,
                  plan.needs_confirmation)
 
-        # Si necesita confirmacion y tenemos DB: pedirla y salir aca.
-        if plan.needs_confirmation and db_mod.is_postgres_enabled():
-            cid = await repos.confirmations.create(
-                session_key=From, payload=plan.to_json())
+        # Politica de seguridad (post-Fase F):
+        # - unsafe → BLOQUEO seco, sin confirmacion, sin tools.
+        # - safe → ejecuta siempre (cualquier backend).
+        # - bulk / destructive:
+        #     postgres → pending_confirmation;
+        #     file     → rechazo (no es seguro confirmar sin persistencia).
+        if plan.safety_level == "unsafe":
+            log.warning("plan UNSAFE bloqueado: intent=%s reason=%s",
+                        plan.intent, plan.confirmation_reason)
             run_id = await repos.agent_runs.create(
-                sid=MessageSid, session_key=From, route="confirm_required",
+                sid=MessageSid, session_key=From, route="blocked",
                 intent=plan.intent, model=plan.model, plan=plan.to_json(),
-                safety_level=plan.safety_level,
+                safety_level="unsafe",
             )
-            await repos.agent_runs.finish(run_id, reply="awaiting_confirmation")
-            cost_log.log_event(route="confirm_required", intent=plan.intent,
+            await repos.agent_runs.finish(run_id, reply="blocked_unsafe")
+            cost_log.log_event(route="blocked", intent=plan.intent,
                                sid=MessageSid,
-                               extra={"safety_level": plan.safety_level,
-                                      "confirmation_id": cid})
-            reply = orchestrator.confirmation_prompt(plan)
+                               extra={"safety_level": "unsafe",
+                                      "reason": plan.confirmation_reason})
+            reply = orchestrator.BLOCKED_UNSAFE_REPLY
             history.append({"role": "assistant", "content": reply})
-        else:
-            # Sin DB y plan.needs_confirmation=True: log de warning y cae
-            # al flujo Sonnet de siempre. Comportamiento MVP, documentado.
-            if plan.needs_confirmation:
-                log.warning("plan needs_confirmation=true pero backend=file: "
-                            "ejecutando sin confirmar (intent=%s safety=%s)",
+
+        elif plan.needs_confirmation:
+            if db_mod.is_postgres_enabled():
+                cid = await repos.confirmations.create(
+                    session_key=From, payload=plan.to_json())
+                run_id = await repos.agent_runs.create(
+                    sid=MessageSid, session_key=From, route="confirm_required",
+                    intent=plan.intent, model=plan.model, plan=plan.to_json(),
+                    safety_level=plan.safety_level,
+                )
+                await repos.agent_runs.finish(run_id,
+                                              reply="awaiting_confirmation")
+                cost_log.log_event(route="confirm_required",
+                                   intent=plan.intent, sid=MessageSid,
+                                   extra={"safety_level": plan.safety_level,
+                                          "confirmation_id": cid})
+                reply = orchestrator.confirmation_prompt(plan)
+                history.append({"role": "assistant", "content": reply})
+            else:
+                # backend=file: no podemos guardar confirmaciones y NO
+                # ejecutamos por las dudas. Rechazo claro al usuario.
+                log.warning("plan needs_confirmation=true con backend=file: "
+                            "rechazado (intent=%s safety=%s)",
                             plan.intent, plan.safety_level)
+                run_id = await repos.agent_runs.create(
+                    sid=MessageSid, session_key=From, route="blocked",
+                    intent=plan.intent, model=plan.model, plan=plan.to_json(),
+                    safety_level=plan.safety_level,
+                )
+                await repos.agent_runs.finish(run_id,
+                                              reply="blocked_no_persistence")
+                cost_log.log_event(route="blocked", intent=plan.intent,
+                                   sid=MessageSid,
+                                   extra={"safety_level": plan.safety_level,
+                                          "reason": "needs_postgres"})
+                reply = orchestrator.NEEDS_POSTGRES_REPLY
+                history.append({"role": "assistant", "content": reply})
+
+        else:
+            # Plan safe: ejecuta directo. Funciona en cualquier backend.
             reply, history, run_meta, run_id = await _execute_plan(
                 plan, history=history, sid=MessageSid, sender=From,
             )

@@ -44,6 +44,25 @@ CONFIRM_NEGATIVE = {"2", "0", "no", "n", "cancelar", "cancel", "cancelo",
                     "abortar", "abort", "stop"}
 
 
+# Texto generico al bloquear una accion unsafe. Deliberadamente vago:
+# no confirma al atacante de que detectamos un intento de prompt
+# injection ni que tipo de heuristica disparo.
+BLOCKED_UNSAFE_REPLY = (
+    "⚠ No puedo ejecutar eso. Si era un pedido genuino, reformulalo "
+    "describiendo la accion concreta que queres."
+)
+
+# Texto cuando una accion requiere confirmacion pero el backend no
+# puede persistirla (file). Se le dice al usuario que esa accion no se
+# puede ejecutar sin postgres; no se cae a Sonnet automaticamente.
+NEEDS_POSTGRES_REPLY = (
+    "⚠ Esta accion requiere confirmacion y este deploy esta corriendo "
+    "con backend=file (sin Postgres). No la puedo ejecutar de forma "
+    "segura. Si queres seguir, dividi el pedido en acciones simples o "
+    "habilita SESSIONS_BACKEND=postgres."
+)
+
+
 # ---------- ActionPlan ----------
 
 @dataclass

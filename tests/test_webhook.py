@@ -165,21 +165,46 @@ def test_router_rule_expense_skips_llm(client, fake_notion):
 
 
 def test_router_haiku_then_sonnet(client, fake_notion):
-    """Mensaje complejo: router clasifica, decide Sonnet, ejecuta agente."""
+    """Mensaje complejo no-bulk con backend=file: router clasifica con
+    Haiku y ejecuta el agente Sonnet directo (sin confirmacion).
+
+    Nota: intent="plan" o "destructive" estan gateados por el
+    orquestador (requieren postgres). Usamos un intent libre tipo
+    "research" para ejercitar la ruta Sonnet sin disparar el gate.
+    """
     tc, ant = client
     fake_notion.databases.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_r2"}
     _router_then_agent(
         ant,
+        classifier_json='{"intent":"research","complexity":"high","confidence":0.95,"destructive":false,"reason":"research"}',
+        agent_text="✓ revisado",
+    )
+    r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
+                                   "Body": "investigame las opciones",
+                                   "MessageSid": "SMplan"})
+    assert r.status_code == 200 and "revisado" in r.text.lower()
+    # clasificador + agente Sonnet
+    assert ant.messages.create.call_count == 2
+
+
+def test_router_bulk_intent_blocked_in_file_backend(client, fake_notion):
+    """Con backend=file, intent='plan' (bulk) se rechaza explicitamente."""
+    tc, ant = client
+    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.pages.create.return_value = {"id": "inbox_pl"}
+    _router_then_agent(
+        ant,
         classifier_json='{"intent":"plan","complexity":"high","confidence":0.95,"destructive":false,"reason":"plan"}',
-        agent_text="✓ semana organizada",
+        agent_text="(nunca se llama)",
     )
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                    "Body": "organizame la semana",
-                                   "MessageSid": "SMplan"})
-    assert r.status_code == 200 and "semana" in r.text.lower()
-    # Se llamo a Anthropic dos veces: clasificador + agente
-    assert ant.messages.create.call_count == 2
+                                   "MessageSid": "SMplan2"})
+    assert r.status_code == 200
+    assert "postgres" in r.text.lower() or "no la puedo" in r.text.lower()
+    # solo se llamo al clasificador, NO al agente Sonnet
+    assert ant.messages.create.call_count == 1
 
 
 def test_router_haiku_low_complexity_uses_haiku_agent(client, fake_notion):
