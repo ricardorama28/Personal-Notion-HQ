@@ -1,6 +1,47 @@
-# Notion WhatsApp Bot
+# Personal Notion HQ — Orchestrator
 
-Bot personal de WhatsApp que gestiona tu Notion (PERSONAL HQ) usando Claude con tool use: tareas, eventos, notas/apuntes, diagramas, gastos, comidas y hábitos.
+Bot personal de WhatsApp + Command Center web que gestiona tu Notion
+(PERSONAL HQ) usando Claude con tool use: tareas, eventos, notas/apuntes,
+diagramas, gastos, comidas y hábitos.
+
+## Versión estable actual: `v0.1.0`
+
+**Estado**: usable diariamente, 206 tests passing, schema Postgres
+versionado con Alembic, UI web operativa.
+
+**Tag**: [`v0.1.0`](CHANGELOG.md#v010---2026-05-20)
+
+**Capacidades en este release:**
+- ✅ Webhook WhatsApp (Twilio) con firma validada e idempotencia.
+- ✅ Router de costo (regex → Haiku → Sonnet) con ahorro ~50-70%.
+- ✅ Persistencia Postgres (sessions, messages, agent_runs, tool_calls,
+     cost_logs, pending_confirmations) — file backend como fallback.
+- ✅ Docker Compose self-hosted con healthchecks, log rotation, backups.
+- ✅ Cloudflare Tunnel opcional (`profiles: [tunnel]`).
+- ✅ Orchestrator con `ActionPlan` + confirmaciones persistentes.
+- ✅ 5 agentes especializados (Capture/Planner/Writer/Research/Critic)
+     con whitelist de tools y defensa en profundidad.
+- ✅ Workers async (`BackgroundTasks`) + outbound vía Twilio REST con
+     anti-fuga.
+- ✅ Command Center web `/admin` (FastAPI + Jinja2 + HTMX + Tailwind
+     CDN) con chat web, runs, costos, alertas, confirmaciones, retry
+     safe. Gateado por `ADMIN_TOKEN`.
+- ✅ Hardening: cookie `Secure`/`HttpOnly`/`SameSite=lax`, login por
+     form POST, /docs deshabilitado por default, Postgres no expuesto,
+     `/health` público minimal.
+
+**Docs operativas:**
+- [docs/INSTALL.md](docs/INSTALL.md) — instalación limpia paso a paso.
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — rutina diaria, queries
+  SQL, rotación de tokens.
+- [docs/ROLLBACK.md](docs/ROLLBACK.md) — fallback a Railway, restore
+  de Postgres, emergencias.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — mejoras priorizadas más allá de
+  v0.1.0.
+- [CHANGELOG.md](CHANGELOG.md) — historial completo por fase.
+
+---
+
 
 ## Estructura en Notion (10 DB bajo PERSONAL HQ)
 
