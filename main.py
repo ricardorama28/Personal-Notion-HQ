@@ -9,11 +9,12 @@ import logging
 import re
 
 from anthropic import Anthropic
-from fastapi import FastAPI, Form, Header, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Form, Header, Request, Response
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 
 import agents
+import async_runner
 import config
 import cost_log
 import db as db_mod
@@ -295,6 +296,7 @@ async def _execute_plan(plan: ActionPlan, *, history: list, sid: str | None,
 
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request,
+                           background_tasks: BackgroundTasks,
                            From: str = Form(...),
                            Body: str = Form(...),
                            MessageSid: str = Form(None)):
@@ -380,6 +382,31 @@ async def whatsapp_webhook(request: Request,
                         ops.set_inbox(inbox_id)
                 except Exception as e:
                     log.warning("inbox en confirmacion: %s", e)
+
+                # Fase H: si el plan confirmado es async-elegible, encolar.
+                if async_runner.should_run_async(plan):
+                    run_id = await repos.agent_runs.create(
+                        sid=MessageSid, session_key=From, route=plan.route,
+                        intent=plan.intent, model=plan.model,
+                        plan=plan.to_json(), safety_level=plan.safety_level,
+                        confirmed_from=pending_id,
+                        async_state="async_pending",
+                    )
+                    background_tasks.add_task(
+                        async_runner.run_in_background,
+                        plan_payload=plan.to_json(), sender=From,
+                        sid=MessageSid, run_id=run_id, inbox_id=inbox_id,
+                    )
+                    ops.clear_inbox()  # el worker lo va a re-setear
+                    reply = async_runner.ACK_REPLY
+                    await repos.messages.add(sid=None, sender=From,
+                                             body=_sanitize_for_persist(reply),
+                                             direction="outbound")
+                    history.append({"role": "assistant", "content": reply})
+                    await repos.sessions.save(
+                        From, history[-config.HISTORY_WINDOW:])
+                    return _twiml(reply)
+
                 try:
                     reply, history, run_meta, _ = await _execute_plan(
                         plan, history=history, sid=MessageSid,
@@ -538,10 +565,33 @@ async def whatsapp_webhook(request: Request,
                     history.append({"role": "assistant", "content": reply})
 
         else:
-            # Plan safe: ejecuta directo. Funciona en cualquier backend.
-            reply, history, run_meta, run_id = await _execute_plan(
-                plan, history=history, sid=MessageSid, sender=From,
-            )
+            # Plan safe (o post-critic OK que no requiere confirmacion).
+            # Fase H: si el plan califica como async y ASYNC_ENABLED=true,
+            # encolar y responder rapido. El worker cierra el Inbox y
+            # manda el WhatsApp outbound cuando termina.
+            if async_runner.should_run_async(plan):
+                run_id = await repos.agent_runs.create(
+                    sid=MessageSid, session_key=From, route=plan.route,
+                    intent=plan.intent, model=plan.model,
+                    plan=plan.to_json(), safety_level=plan.safety_level,
+                    async_state="async_pending",
+                )
+                background_tasks.add_task(
+                    async_runner.run_in_background,
+                    plan_payload=plan.to_json(), sender=From,
+                    sid=MessageSid, run_id=run_id, inbox_id=inbox_id,
+                )
+                reply = async_runner.ACK_REPLY
+                history.append({"role": "assistant", "content": reply})
+                # El worker se encarga del Inbox: el finally NO debe tocarlo.
+                inbox_id = None
+                # Tampoco actualizamos agent_runs al final del handler:
+                # el worker hace ese update con el resultado real.
+                run_id = None
+            else:
+                reply, history, run_meta, run_id = await _execute_plan(
+                    plan, history=history, sid=MessageSid, sender=From,
+                )
     except Exception as e:
         log.exception("error en orquestador/agente")
         reply = f"error: {type(e).__name__}: {e}"

@@ -71,6 +71,9 @@ class AgentRun(Base):
     plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     safety_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
     confirmed_from: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Fase H: estado del ejecutor async.
+    # None = sync; async_pending | async_running | async_done | async_error
+    async_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class ToolCall(Base):

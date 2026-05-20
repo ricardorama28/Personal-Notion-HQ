@@ -99,14 +99,16 @@ class AgentRunRepo:
                      model: Optional[str],
                      plan: Optional[dict] = None,
                      safety_level: Optional[str] = None,
-                     confirmed_from: Optional[str] = None) -> Optional[str]:
+                     confirmed_from: Optional[str] = None,
+                     async_state: Optional[str] = None) -> Optional[str]:
         if not db.is_postgres_enabled():
             return None
         async with db.session_scope() as s:
             run = models.AgentRun(sid=sid, session_key=session_key, route=route,
                                   intent=intent, model=model,
                                   plan=plan, safety_level=safety_level,
-                                  confirmed_from=confirmed_from)
+                                  confirmed_from=confirmed_from,
+                                  async_state=async_state)
             s.add(run)
             await s.flush()
             return run.id

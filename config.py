@@ -33,6 +33,18 @@ ROUTER_CONFIDENCE_THRESHOLD = float(os.environ.get(
 MY_WHATSAPP = os.environ.get("MY_WHATSAPP", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_VALIDATE = _bool("TWILIO_VALIDATE", default=True)
+# Fase H: outbound async. ACCOUNT_SID + FROM_WHATSAPP son necesarios SOLO
+# si el worker async va a mandar mensajes posteriores. Si faltan, el
+# worker registra el resultado en DB pero no manda WhatsApp.
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_FROM_WHATSAPP = os.environ.get("TWILIO_FROM_WHATSAPP", "")
+
+# ---------- Async workers (Fase H) ----------
+# Default false: el bot sigue 100% sincrono. Si lo prendes, ciertos
+# planes (PlannerAgent, WriterAgent, ResearchAgent) se ejecutan en
+# BackgroundTasks; el webhook responde rapido y el resultado va por
+# WhatsApp outbound cuando termina.
+ASYNC_ENABLED = _bool("ASYNC_ENABLED", default=False)
 
 # ---------- Admin ----------
 # Token compartido para endpoints sensibles (/health/internal, /diag).
