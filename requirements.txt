@@ -6,3 +6,6 @@ twilio>=9.0.0
 python-dotenv>=1.0.0
 python-multipart>=0.0.9
 dateparser>=1.2.0
+SQLAlchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0
+alembic>=1.13.0

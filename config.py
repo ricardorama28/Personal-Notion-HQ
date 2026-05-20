@@ -46,6 +46,21 @@ HABITS_DB_ID = os.environ.get("HABITS_DB_ID", "")
 HABITLOG_DB_ID = os.environ.get("HABITLOG_DB_ID", "")
 INBOX_DB_ID = os.environ.get("INBOX_DB_ID", "")
 
+# ---------- Persistencia (Fase C) ----------
+# Backend de sesiones: "file" (default, /tmp JSON) o "postgres".
+SESSIONS_BACKEND = os.environ.get("SESSIONS_BACKEND", "file").strip().lower()
+# URL SQLAlchemy async. Ej: postgresql+asyncpg://user:pass@host:5432/db
+# Para tests: sqlite+aiosqlite:///:memory:
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# TTL default para pending_confirmations (minutos).
+CONFIRMATION_TTL_MINUTES = int(os.environ.get("CONFIRMATION_TTL_MINUTES", "10"))
+
+if SESSIONS_BACKEND == "postgres" and not DATABASE_URL:
+    raise RuntimeError(
+        "SESSIONS_BACKEND=postgres pero DATABASE_URL no esta seteada. "
+        "Configurala (postgresql+asyncpg://...) o usá SESSIONS_BACKEND=file."
+    )
+
 # ---------- Runtime ----------
 SESSIONS_FILE = Path(os.environ.get("SESSIONS_FILE", "/tmp/wpp_sessions.json"))
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))

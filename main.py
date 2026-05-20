@@ -13,6 +13,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 import config
 import cost_log
 import notion_ops as ops
+import repos
 import router as wpp_router
 from notion_ops import diagnostics, today_context
 from prompts import SYSTEM
@@ -43,17 +44,7 @@ def mask_sender(s: str) -> str:
     return f"{s[:6]}…{s[-2:]}"
 
 
-def load_sessions() -> dict:
-    if config.SESSIONS_FILE.exists():
-        try:
-            return json.loads(config.SESSIONS_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def save_sessions(sessions: dict) -> None:
-    config.SESSIONS_FILE.write_text(json.dumps(sessions, ensure_ascii=False))
+log.info("sessions backend=%s", config.SESSIONS_BACKEND)
 
 
 def _public_url(request: Request) -> str:
@@ -77,12 +68,18 @@ async def _validate_twilio(request: Request, form: dict) -> bool:
 
 
 def run_agent(messages: list, model: str,
-              sid: str = None, intent: str = None) -> tuple[str, list]:
-    """Loop de tool use con el modelo elegido. Loggea tokens en cost_log."""
+              sid: str = None, intent: str = None
+              ) -> tuple[str, list, dict]:
+    """Loop de tool use. Devuelve (texto, mensajes, run_meta).
+
+    run_meta = {model, input_tokens, output_tokens, iterations, tool_calls:
+    [{name, args, result}]}.
+    """
     system_prompt = f"{SYSTEM}\n\n{today_context()}"
     total_in = 0
     total_out = 0
     iterations = 0
+    tool_invocations: list[dict] = []
 
     try:
         for _ in range(config.MAX_TOOL_ITERATIONS):
@@ -104,12 +101,18 @@ def run_agent(messages: list, model: str,
 
             if response.stop_reason != "tool_use":
                 text = "\n".join(b.text for b in response.content if b.type == "text")
-                return text.strip() or "✓", messages
+                meta = {"model": model, "input_tokens": total_in,
+                        "output_tokens": total_out, "iterations": iterations,
+                        "tool_calls": tool_invocations}
+                return text.strip() or "✓", messages, meta
 
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
                     result = execute_tool(block.name, block.input)
+                    tool_invocations.append({"name": block.name,
+                                             "args": block.input,
+                                             "result": result})
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -118,7 +121,11 @@ def run_agent(messages: list, model: str,
 
             messages.append({"role": "user", "content": tool_results})
 
-        return "Llegue al limite de iteraciones, probá reformular.", messages
+        return ("Llegue al limite de iteraciones, probá reformular.",
+                messages,
+                {"model": model, "input_tokens": total_in,
+                 "output_tokens": total_out, "iterations": iterations,
+                 "tool_calls": tool_invocations})
     finally:
         cost_log.log_event(
             route=("haiku_agent" if model == config.ROUTER_MODEL else "sonnet_agent"),
@@ -185,13 +192,11 @@ async def whatsapp_webhook(request: Request,
             f"Poné exactamente ese valor en la env var MY_WHATSAPP y redeployá."
         )
 
-    sessions = load_sessions()
-    history = sessions.get(From, [])
+    history = await repos.sessions.load(From)
 
     body_norm = Body.strip().lower()
     if body_norm in {"/reset", "nuevo", "reset"}:
-        sessions[From] = []
-        save_sessions(sessions)
+        await repos.sessions.clear(From)
         cost_log.log_event(route="admin", intent="reset", sid=MessageSid)
         return _twiml("✓ sesion limpia")
 
@@ -218,27 +223,43 @@ async def whatsapp_webhook(request: Request,
     except Exception as e:
         log.warning("no se pudo registrar en Inbox: %s", e)
 
+    # Mensaje inbound persistido (solo escribe si backend=postgres).
+    await repos.messages.add(sid=MessageSid, sender=From, body=Body,
+                             direction="inbound", inbox_page_id=inbox_id)
+
     history.append({"role": "user", "content": Body})
 
     reply = ""
+    run_id: str | None = None
+    decision = None
+    run_meta: dict = {}
     try:
         decision = wpp_router.route(Body, client)
         log.info("router decision: route=%s intent=%s model=%s reason=%s",
                  decision.route, decision.intent, decision.model, decision.reason)
 
+        run_id = await repos.agent_runs.create(
+            sid=MessageSid, session_key=From,
+            route=decision.route, intent=decision.intent,
+            model=decision.model,
+        )
+
         if decision.route == wpp_router.ROUTE_RULE:
-            # Ejecucion directa de una tool, sin LLM.
             result = execute_tool(decision.tool, decision.tool_args or {})
+            await repos.tool_calls.add(agent_run_id=run_id, sid=MessageSid,
+                                       name=decision.tool,
+                                       args=decision.tool_args or {},
+                                       result=result)
             reply = _render_rule_result(decision.intent, result)
             history.append({"role": "assistant", "content": reply})
-            cost_log.log_event(
+            rec = cost_log.log_event(
                 route="rule", intent=decision.intent, sid=MessageSid,
                 extra={"tool": decision.tool, "ok": "error" not in result},
             )
+            await repos.cost_logs.add(rec)
         else:
-            # Router cobra sus tokens (clasificacion Haiku).
             if decision.router_input_tokens or decision.router_output_tokens:
-                cost_log.log_event(
+                rec = cost_log.log_event(
                     route="haiku_router", intent=decision.intent,
                     model=config.ROUTER_MODEL, sid=MessageSid,
                     input_tokens=decision.router_input_tokens,
@@ -247,15 +268,34 @@ async def whatsapp_webhook(request: Request,
                            "destructive": decision.destructive,
                            "reason": decision.reason},
                 )
-            reply, history = run_agent(
+                await repos.cost_logs.add(rec)
+            reply, history, run_meta = run_agent(
                 history, model=decision.model or config.ORCHESTRATOR_MODEL,
                 sid=MessageSid, intent=decision.intent,
             )
+            # persistir tool_calls del agente
+            for tc in run_meta.get("tool_calls", []):
+                await repos.tool_calls.add(agent_run_id=run_id, sid=MessageSid,
+                                           name=tc["name"], args=tc["args"],
+                                           result=tc["result"])
+            # agente cost_log a postgres
+            await repos.cost_logs.add({
+                "ts": None, "sid": MessageSid,
+                "route": ("haiku_agent" if run_meta.get("model") == config.ROUTER_MODEL
+                          else "sonnet_agent"),
+                "intent": decision.intent, "model": run_meta.get("model"),
+                "input_tokens": run_meta.get("input_tokens", 0),
+                "output_tokens": run_meta.get("output_tokens", 0),
+                "iterations": run_meta.get("iterations", 0),
+            })
     except Exception as e:
         log.exception("error en run_agent")
         reply = f"error: {type(e).__name__}: {e}"
-        cost_log.log_event(route="error", intent="exception", sid=MessageSid,
-                           extra={"error": f"{type(e).__name__}: {e}"})
+        rec = cost_log.log_event(route="error", intent="exception",
+                                 sid=MessageSid,
+                                 extra={"error": f"{type(e).__name__}: {e}"})
+        await repos.cost_logs.add(rec)
+        await repos.agent_runs.finish(run_id, error=str(e))
     finally:
         if inbox_id:
             try:
@@ -264,8 +304,19 @@ async def whatsapp_webhook(request: Request,
                 log.warning("no se pudo cerrar la fila de Inbox: %s", e)
         ops.clear_inbox()
 
-    sessions[From] = history[-config.HISTORY_WINDOW:]
-    save_sessions(sessions)
+    await repos.agent_runs.finish(
+        run_id,
+        input_tokens=run_meta.get("input_tokens", 0),
+        output_tokens=run_meta.get("output_tokens", 0),
+        iterations=run_meta.get("iterations", 0),
+        reply=reply,
+    )
+
+    # outbound persistido (solo si backend=postgres)
+    await repos.messages.add(sid=MessageSid, sender=From, body=reply,
+                             direction="outbound")
+
+    await repos.sessions.save(From, history[-config.HISTORY_WINDOW:])
 
     return _twiml(reply)
 
@@ -279,6 +330,8 @@ async def health():
         "notion_token_set": bool(config.NOTION_TOKEN),
         "twilio_validate": config.TWILIO_VALIDATE,
         "twilio_auth_token_set": bool(config.TWILIO_AUTH_TOKEN),
+        "sessions_backend": config.SESSIONS_BACKEND,
+        "database_url_set": bool(config.DATABASE_URL),
     }
 
 

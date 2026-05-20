@@ -5,12 +5,14 @@ Setup global de tests.
 - Mockea notion_client.Client para que no haga llamadas reales.
 - Mockea anthropic.Anthropic en main.py para no llamar a la API.
 """
+import asyncio
 import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import pytest_asyncio
 
 # 1. Envs falsas ANTES de importar nada del proyecto.
 os.environ.setdefault("NOTION_TOKEN", "secret_test_token")
@@ -67,3 +69,21 @@ def client(monkeypatch, tmp_path):
     fake_anthropic = MagicMock(name="anthropic_client")
     monkeypatch.setattr(main, "client", fake_anthropic)
     return TestClient(main.app), fake_anthropic
+
+
+@pytest_asyncio.fixture
+async def pg_db(monkeypatch):
+    """Backend postgres con SQLite-aiosqlite en memoria para tests.
+
+    Cambia SESSIONS_BACKEND=postgres, crea el schema via metadata y
+    devuelve el modulo db para que el test pueda inspeccionar.
+    """
+    import config
+    import db as db_mod
+    monkeypatch.setattr(config, "SESSIONS_BACKEND", "postgres")
+    monkeypatch.setattr(config, "DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    # forzar engine nuevo
+    await db_mod.dispose()
+    await db_mod.create_all_for_tests()
+    yield db_mod
+    await db_mod.dispose()

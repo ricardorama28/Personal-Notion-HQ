@@ -157,6 +157,67 @@ extra.
 Comando WhatsApp `/cost` muestra los ultimos 7 dias (USD, tokens,
 distribucion por ruta) leyendo `COST_LOG_FILE` (JSONL).
 
+## Persistencia: file vs postgres (Fase C)
+
+El bot soporta dos backends de sesion, elegidos con `SESSIONS_BACKEND`:
+
+| Backend | Donde vive el historial | Otros datos (messages, agent_runs, tool_calls, cost_logs, pending_confirmations) |
+|---|---|---|
+| `file` (default) | `/tmp/wpp_sessions.json` | no se persisten en SQL |
+| `postgres` | tabla `sessions` | tambien se persisten todas las tablas |
+
+Si falta `DATABASE_URL` y `SESSIONS_BACKEND=postgres`, la app falla al
+arrancar con un mensaje claro. Mientras se mantenga `SESSIONS_BACKEND=file`,
+el bot funciona exactamente como antes y no necesita Postgres.
+
+### Configurar Postgres local
+
+```bash
+# 1. Instalar Postgres (Debian/Ubuntu) y crear DB
+sudo apt install postgresql
+sudo -u postgres createdb wpp
+sudo -u postgres createuser wpp -P  # poné una clave
+
+# 2. Variables en .env
+SESSIONS_BACKEND=postgres
+DATABASE_URL=postgresql+asyncpg://wpp:<password>@localhost:5432/wpp
+
+# 3. Correr migraciones
+alembic upgrade head
+```
+
+### Migraciones Alembic
+
+```bash
+# aplicar todas las migraciones pendientes
+alembic upgrade head
+
+# ver estado
+alembic current
+alembic history
+
+# generar nueva (cuando se cambien los modelos)
+alembic revision -m "descripcion del cambio" --autogenerate
+```
+
+### Volver al backend file
+
+```bash
+SESSIONS_BACKEND=file
+# DATABASE_URL puede quedar seteada o vacia, no se usa
+```
+
+El historial anterior en `/tmp/wpp_sessions.json` queda intacto. No hay
+migracion automatica de un backend al otro (la sesion en curso se va a
+recrear con el primer mensaje nuevo).
+
+### Que cambia respecto a `/tmp/wpp_sessions.json`
+
+- `file`: idéntico al MVP. Se pierde con reinicio del contenedor.
+- `postgres`: sobrevive a reinicios; ademas guarda un registro completo
+  de cada mensaje, agent_run, tool_call y cost_log que Fase F (orquestador)
+  y Fase I (panel) van a usar.
+
 ## Tests
 
 ```bash
@@ -184,11 +245,13 @@ personal autoalojado. Cada fase entrega valor por si sola.
 
 - **Fase A**: MVP estable. Firma Twilio, idempotencia, Inbox
   endurecido, tests, `config.py` centralizado.
-- **Fase B** (actual): Router de costo. Reglas/regex para mensajes obvios,
+- **Fase B**: Router de costo. Reglas/regex para mensajes obvios,
   Haiku para clasificar, Sonnet solo cuando hace falta. Logging de tokens
   y costo a JSONL (`COST_LOG_FILE`). Comando `/cost` por WhatsApp.
-- **Fase C**: Persistencia en Postgres. Tablas `messages`, `sessions`,
-  `agent_runs`, `tool_calls`, `cost_logs`.
+- **Fase C** (actual): Persistencia opcional en Postgres con flag
+  `SESSIONS_BACKEND=file|postgres`. Tablas `messages`, `sessions`,
+  `agent_runs`, `tool_calls`, `cost_logs`, `pending_confirmations`.
+  SQLAlchemy async + Alembic.
 - **Fase D**: Docker Compose local (`web` + `postgres`, opcionales:
   `redis`, `worker`, `cloudflared`).
 - **Fase E**: Webhook publico desde PC propia via Cloudflare Tunnel.
