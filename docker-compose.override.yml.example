@@ -1,0 +1,24 @@
+# Override opcional para DESARROLLO LOCAL.
+# Copialo a docker-compose.override.yml (gitignored) si necesitas:
+#   - acceder a Postgres con psql/DBeaver desde tu maquina;
+#   - hot reload de la app sin rebuild.
+# NO lo uses en produccion / PC self-hosted expuesta.
+
+services:
+  postgres:
+    ports:
+      # Solo loopback. NO usar 5432:5432 (eso lo abre a toda la red).
+      - "127.0.0.1:5432:5432"
+
+  web:
+    # Hot reload: monta el codigo y usa --reload.
+    volumes:
+      - .:/app
+      - appdata:/data
+    command: >
+      bash -c "scripts/migrate.sh &&
+               exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    # Habilitar pytest dentro del contenedor (necesita aiosqlite y demas).
+    # Si vas a correr tests dentro, instalá dev deps con:
+    #   make shell
+    #   pip install --user -r requirements-dev.txt

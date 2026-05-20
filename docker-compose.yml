@@ -1,0 +1,57 @@
+name: personal-notion-hq
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wpp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requerido en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wpp}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Postgres NO se expone al host por seguridad. Si necesitas conectarte
+    # con psql/DBeaver desde tu maquina, copiá docker-compose.override.yml.example
+    # → docker-compose.override.yml. NO commitees ese archivo.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wpp} -d ${POSTGRES_DB:-wpp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # En compose, `environment:` gana sobre `env_file:`. Forzamos la URL
+      # apuntando al servicio postgres del network interno. Si tu .env tiene
+      # SESSIONS_BACKEND=file, DATABASE_URL queda seteada pero no se usa
+      # (config.py la ignora cuando backend=file).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wpp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wpp}
+      PORT: "8000"
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      # /data persiste sessions.json y cost_log.jsonl cuando backend=file,
+      # y queda disponible para artefactos futuros (Fase G/I).
+      - appdata:/data
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  pgdata:
+    name: personal-notion-hq_pgdata
+  appdata:
+    name: personal-notion-hq_appdata

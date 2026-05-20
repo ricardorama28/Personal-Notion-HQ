@@ -1,2 +1,20 @@
 .env
+.env.local
+.env.*.local
 __pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+
+# Docker Compose: el override es local-only (abre puertos, monta codigo,
+# habilita reload). Nunca commitearlo.
+docker-compose.override.yml
+
+# Datos persistentes locales si alguien monta ./data en vez de un volumen.
+/data/
+data/
+*.db
+*.sqlite

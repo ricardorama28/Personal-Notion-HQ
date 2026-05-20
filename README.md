@@ -249,6 +249,173 @@ recrear con el primer mensaje nuevo).
   de cada mensaje, agent_run, tool_call y cost_log que Fase F (orquestador)
   y Fase I (panel) van a usar.
 
+## Docker Compose (Fase D)
+
+Para correr en tu PC (o cualquier server) con Postgres incluido,
+healthchecks, volumen persistente y migraciones automaticas.
+
+### Requisitos previos
+
+- Docker Engine 24+ y `docker compose` v2 (`docker compose version`).
+- `make` (opcional, hace los comandos mas cortos).
+- Tokens de Notion, Anthropic y Twilio en el `.env`.
+
+### Crear `.env`
+
+```bash
+cp .env.example .env
+# editar .env y completar:
+#   NOTION_TOKEN, ANTHROPIC_API_KEY, TWILIO_AUTH_TOKEN, MY_WHATSAPP
+#   POSTGRES_PASSWORD  (¡cambiala SIEMPRE!)
+#   SESSIONS_BACKEND=postgres  (para usar la DB del compose)
+```
+
+`.env` esta en `.gitignore` y nunca se commitea. `.env.example` no lleva
+secretos: solo placeholders.
+
+### Levantar
+
+```bash
+make up              # build + up -d, espera a /health
+# equivalente sin make:
+# docker compose up -d --build
+```
+
+La primera vez:
+1. `postgres` arranca y queda `healthy` (`pg_isready`).
+2. `web` se construye, `scripts/migrate.sh` espera a Postgres, corre
+   `alembic upgrade head` y arranca `uvicorn` en `:8000`.
+3. El healthcheck de `web` golpea `/health` y aprueba si `ok=true`.
+
+### Migraciones
+
+`scripts/migrate.sh` se ejecuta automaticamente en cada arranque del
+contenedor `web`. Si necesitas correrlas manualmente:
+
+```bash
+make migrate
+# equivalente:
+# docker compose exec web alembic upgrade head
+```
+
+Cuando cambies modelos:
+
+```bash
+make shell
+alembic revision -m "descripcion" --autogenerate
+# revisa el archivo generado en alembic/versions/
+exit
+make migrate
+```
+
+### Probar `/health`
+
+```bash
+curl -s http://localhost:8000/health | python -m json.tool
+```
+
+Esperable cuando todo esta OK:
+```json
+{
+  "ok": true,
+  "sessions_backend": "postgres",
+  "database_url_set": true,
+  "database_ok": true,
+  ...
+}
+```
+
+Si `database_ok=false`, `ok=false` y `make logs` muestra el detalle.
+
+### Simular un webhook
+
+`TWILIO_VALIDATE=false` en el `.env` durante pruebas locales (sino
+necesitas firmar el request con el Auth Token):
+
+```bash
+make smoke                          # /health + un mensaje de prueba
+# o uno particular:
+WEBHOOK_URL=http://localhost:8000/webhook \
+  bash scripts/simulate_webhook.sh "gasto 100 cafe"
+```
+
+### Ver logs
+
+```bash
+make logs                           # tail -f de todos los servicios
+docker compose logs -f web          # solo web
+docker compose logs -f postgres     # solo db
+```
+
+### Apagar y reiniciar
+
+```bash
+make down              # baja contenedores, MANTIENE volumenes
+make up                # los vuelve a levantar
+make rebuild           # down + build --no-cache + up
+make clean             # ⚠ down + BORRA volumenes (pierde Postgres y /data)
+```
+
+### Persistencia de datos
+
+| Que | Donde | Sobrevive a `make down` | Sobrevive a `make clean` |
+|---|---|---|---|
+| Tablas Postgres | volumen `personal-notion-hq_pgdata` | sí | **no** |
+| Sesiones (file backend) / cost JSONL | volumen `personal-notion-hq_appdata` (`/data` en web) | sí | **no** |
+
+Verificar:
+
+```bash
+docker volume ls | grep personal-notion-hq
+docker volume inspect personal-notion-hq_pgdata
+make psql -c "select count(*) from messages;"
+make shell -c "ls -la /data"
+```
+
+### Acceso a Postgres desde el host (opcional, dev)
+
+Por seguridad el contenedor de Postgres **no expone puertos** al host.
+Para conectar con `psql`/DBeaver desde tu maquina:
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+make rebuild
+psql -h 127.0.0.1 -p 5432 -U wpp -d wpp
+```
+
+El override solo abre `127.0.0.1:5432` (no toda la red). Esta gitignored,
+nunca lo commitees. Sin override, podes usar `make psql` (psql dentro del
+contenedor) sin abrir nada.
+
+### Volver a correr sin Docker
+
+Railway, dev local sin Docker o cualquier otro entorno siguen
+funcionando igual:
+
+```bash
+make down                                # apagar la stack docker
+python -m venv venv && source venv/bin/activate
+pip install -r requirements-dev.txt
+TWILIO_VALIDATE=false uvicorn main:app --reload --port 8000
+```
+
+`Procfile` sigue intacto para Railway. `SESSIONS_BACKEND=file` (default)
+no necesita Postgres y guarda en `/tmp/wpp_sessions.json` (o `/data/` si
+existe).
+
+### Smoke checks de Docker
+
+```bash
+make up
+make smoke                       # /health + webhook de prueba
+make logs                        # verificar que no haya errores
+make psql                        # entrar a la DB y consultar tablas
+\dt                              # ver las 6 tablas creadas
+select count(*) from agent_runs; # ver corridas
+```
+
+Si todo eso pasa, el deploy local esta OK.
+
 ## Tests
 
 ```bash
@@ -283,8 +450,8 @@ personal autoalojado. Cada fase entrega valor por si sola.
   `SESSIONS_BACKEND=file|postgres`. Tablas `messages`, `sessions`,
   `agent_runs`, `tool_calls`, `cost_logs`, `pending_confirmations`.
   SQLAlchemy async + Alembic.
-- **Fase D**: Docker Compose local (`web` + `postgres`, opcionales:
-  `redis`, `worker`, `cloudflared`).
+- **Fase D** (actual): Docker Compose local/self-hosted (`web` +
+  `postgres`, opcionales: `redis`, `worker`, `cloudflared` para Fase E).
 - **Fase E**: Webhook publico desde PC propia via Cloudflare Tunnel.
   Railway queda como fallback documentado.
 - **Fase F**: Orchestrator central con `ActionPlan` y confirmaciones
