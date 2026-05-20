@@ -22,6 +22,38 @@ import config
 import router as wpp_router
 
 
+# Fase G: mapeo intent → nombre de agente especializado. Si un intent no
+# matchea aca, cae al `run_agent` legacy (route = haiku_agent/sonnet_agent).
+_INTENT_TO_AGENT = {
+    # captura (Haiku)
+    "add_expense": "capture_agent",
+    "add_meal": "capture_agent",
+    "log_habit": "capture_agent",
+    "add_note": "capture_agent",
+    "create_task": "capture_agent",
+    "create_event": "capture_agent",
+    "query_tasks": "capture_agent",
+    "query_events": "capture_agent",
+    # planificacion (Sonnet, requiere confirmacion por bulk)
+    "plan": "planner_agent",
+    "reorganize": "planner_agent",
+    "reorganizar": "planner_agent",
+    "bulk_create": "planner_agent",
+    # redaccion (Sonnet)
+    "write": "writer_agent",
+    "redactar": "writer_agent",
+    # investigacion (Haiku stub)
+    "research": "research_agent",
+    "investigar": "research_agent",
+}
+
+
+def select_agent(intent: str) -> str | None:
+    """Devuelve el nombre del agente especializado para un intent, o None
+    si conviene caer al run_agent legacy."""
+    return _INTENT_TO_AGENT.get((intent or "").strip())
+
+
 # ---------- Constantes de clasificacion ----------
 
 # Intents que el agente puede ejecutar sin pedir confirmacion.
@@ -127,13 +159,30 @@ def plan_from_decision(decision, user_text: str) -> ActionPlan:
         needs_conf = True
         reason = f"accion compleja ({intent}); puede crear/mover varios registros"
 
-    route_str = ("haiku_agent" if decision.route == wpp_router.ROUTE_HAIKU
-                 else "sonnet_agent")
+    # Eleccion de agente especializado (Fase G). Si hay match, override la
+    # route. Si no, mantenemos haiku_agent/sonnet_agent (fallback legacy).
+    agent_name = select_agent(intent)
+    if agent_name:
+        route_str = agent_name
+        # Ajustamos el modelo al default del agente solo si el router NO
+        # tenia preferencia explicita. Pre-seteamos None y que _execute_plan
+        # use el default del agente.
+        model = decision.model
+        if agent_name in {"capture_agent", "research_agent", "critic_agent"}:
+            # Estos agentes son Haiku por default — si el router ya eligio
+            # Sonnet, igualmente preferimos el barato.
+            model = config.ROUTER_MODEL
+        elif agent_name in {"planner_agent", "writer_agent"}:
+            model = config.ORCHESTRATOR_MODEL
+    else:
+        route_str = ("haiku_agent" if decision.route == wpp_router.ROUTE_HAIKU
+                     else "sonnet_agent")
+        model = decision.model
 
     return ActionPlan(
         intent=intent,
         route=route_str,
-        model=decision.model,
+        model=model,
         tools=[],
         payload={
             "user_text": user_text,

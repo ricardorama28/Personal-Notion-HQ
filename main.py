@@ -13,6 +13,7 @@ from fastapi import FastAPI, Form, Header, Request, Response
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 
+import agents
 import config
 import cost_log
 import db as db_mod
@@ -258,24 +259,36 @@ async def _execute_plan(plan: ActionPlan, *, history: list, sid: str | None,
             {"name": tool, "args": args, "result": result}
         ]}, run_id
 
-    # agent path
-    reply, history, run_meta = run_agent(
-        history, model=plan.model or config.ORCHESTRATOR_MODEL,
-        sid=sid, intent=plan.intent,
-    )
+    # agente: especializado si plan.route lo identifica, fallback legacy
+    # si es haiku_agent/sonnet_agent.
+    agent = agents.get_agent(plan.route)
+    if agent is not None:
+        reply, history, run_meta = agent.run(
+            history, anthropic_client=client, sid=sid, intent=plan.intent,
+            model_override=plan.model,
+        )
+        cost_route = agent.name
+    else:
+        reply, history, run_meta = run_agent(
+            history, model=plan.model or config.ORCHESTRATOR_MODEL,
+            sid=sid, intent=plan.intent,
+        )
+        cost_route = ("haiku_agent" if run_meta.get("model") == config.ROUTER_MODEL
+                      else "sonnet_agent")
+
     for tc in run_meta.get("tool_calls", []):
         await repos.tool_calls.add(agent_run_id=run_id, sid=sid,
                                    name=tc["name"], args=tc["args"],
                                    result=tc["result"])
     await repos.cost_logs.add({
         "ts": None, "sid": sid,
-        "route": ("haiku_agent" if run_meta.get("model") == config.ROUTER_MODEL
-                  else "sonnet_agent"),
+        "route": cost_route,
         "intent": plan.intent, "model": run_meta.get("model"),
         "input_tokens": run_meta.get("input_tokens", 0),
         "output_tokens": run_meta.get("output_tokens", 0),
         "iterations": run_meta.get("iterations", 0),
         "confirmed_from": confirmed_from,
+        "agent": run_meta.get("agent"),
     })
     return reply, history, run_meta, run_id
 
@@ -456,41 +469,73 @@ async def whatsapp_webhook(request: Request,
             history.append({"role": "assistant", "content": reply})
 
         elif plan.needs_confirmation:
-            if db_mod.is_postgres_enabled():
-                cid = await repos.confirmations.create(
-                    session_key=From, payload=plan.to_json())
-                run_id = await repos.agent_runs.create(
-                    sid=MessageSid, session_key=From, route="confirm_required",
-                    intent=plan.intent, model=plan.model, plan=plan.to_json(),
-                    safety_level=plan.safety_level,
-                )
-                await repos.agent_runs.finish(run_id,
-                                              reply="awaiting_confirmation")
-                cost_log.log_event(route="confirm_required",
-                                   intent=plan.intent, sid=MessageSid,
-                                   extra={"safety_level": plan.safety_level,
-                                          "confirmation_id": cid})
-                reply = orchestrator.confirmation_prompt(plan)
-                history.append({"role": "assistant", "content": reply})
-            else:
-                # backend=file: no podemos guardar confirmaciones y NO
-                # ejecutamos por las dudas. Rechazo claro al usuario.
-                log.warning("plan needs_confirmation=true con backend=file: "
-                            "rechazado (intent=%s safety=%s)",
-                            plan.intent, plan.safety_level)
-                run_id = await repos.agent_runs.create(
-                    sid=MessageSid, session_key=From, route="blocked",
-                    intent=plan.intent, model=plan.model, plan=plan.to_json(),
-                    safety_level=plan.safety_level,
-                )
-                await repos.agent_runs.finish(run_id,
-                                              reply="blocked_no_persistence")
-                cost_log.log_event(route="blocked", intent=plan.intent,
-                                   sid=MessageSid,
-                                   extra={"safety_level": plan.safety_level,
-                                          "reason": "needs_postgres"})
-                reply = orchestrator.NEEDS_POSTGRES_REPLY
-                history.append({"role": "assistant", "content": reply})
+            # Critic-Safety: para destructive consultamos antes de pedir
+            # confirmacion, SOLO si tenemos backend postgres (sino igual
+            # rechazamos y no gastamos tokens del critic).
+            critic_blocked = False
+            if (plan.safety_level == "destructive"
+                    and db_mod.is_postgres_enabled()):
+                verdict = agents.review_plan(plan, Body,
+                                             anthropic_client=client)
+                log.info("critic verdict=%s reason=%s",
+                         verdict.get("verdict"), verdict.get("reason"))
+                if verdict.get("verdict") == "block":
+                    critic_blocked = True
+                    run_id = await repos.agent_runs.create(
+                        sid=MessageSid, session_key=From, route="blocked",
+                        intent=plan.intent, model=plan.model,
+                        plan={**plan.to_json(), "critic": verdict},
+                        safety_level="unsafe",
+                    )
+                    await repos.agent_runs.finish(run_id,
+                                                  reply="blocked_by_critic")
+                    cost_log.log_event(route="blocked", intent=plan.intent,
+                                       sid=MessageSid,
+                                       extra={"safety_level": "unsafe",
+                                              "critic_reason":
+                                                  verdict.get("reason")})
+                    reply = orchestrator.BLOCKED_UNSAFE_REPLY
+                    history.append({"role": "assistant", "content": reply})
+
+            if not critic_blocked:
+                if db_mod.is_postgres_enabled():
+                    cid = await repos.confirmations.create(
+                        session_key=From, payload=plan.to_json())
+                    run_id = await repos.agent_runs.create(
+                        sid=MessageSid, session_key=From,
+                        route="confirm_required",
+                        intent=plan.intent, model=plan.model,
+                        plan=plan.to_json(),
+                        safety_level=plan.safety_level,
+                    )
+                    await repos.agent_runs.finish(run_id,
+                                                  reply="awaiting_confirmation")
+                    cost_log.log_event(route="confirm_required",
+                                       intent=plan.intent, sid=MessageSid,
+                                       extra={"safety_level": plan.safety_level,
+                                              "confirmation_id": cid})
+                    reply = orchestrator.confirmation_prompt(plan)
+                    history.append({"role": "assistant", "content": reply})
+                else:
+                    # backend=file: no podemos guardar confirmaciones; NO
+                    # ejecutamos. Rechazo claro al usuario.
+                    log.warning("plan needs_confirmation=true con "
+                                "backend=file: rechazado (intent=%s safety=%s)",
+                                plan.intent, plan.safety_level)
+                    run_id = await repos.agent_runs.create(
+                        sid=MessageSid, session_key=From, route="blocked",
+                        intent=plan.intent, model=plan.model,
+                        plan=plan.to_json(),
+                        safety_level=plan.safety_level,
+                    )
+                    await repos.agent_runs.finish(
+                        run_id, reply="blocked_no_persistence")
+                    cost_log.log_event(route="blocked", intent=plan.intent,
+                                       sid=MessageSid,
+                                       extra={"safety_level": plan.safety_level,
+                                              "reason": "needs_postgres"})
+                    reply = orchestrator.NEEDS_POSTGRES_REPLY
+                    history.append({"role": "assistant", "content": reply})
 
         else:
             # Plan safe: ejecuta directo. Funciona en cualquier backend.

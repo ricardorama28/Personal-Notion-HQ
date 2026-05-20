@@ -39,9 +39,10 @@ def test_plan_from_rule_is_safe_direct_exec():
 
 
 def test_plan_from_safe_agent_no_confirmation():
+    """add_note → capture_agent (Fase G), sin confirmacion, safe."""
     from orchestrator import plan_from_decision
     p = plan_from_decision(_decision(intent="add_note"), "anotá X")
-    assert p.route == "haiku_agent"
+    assert p.route == "capture_agent"
     assert p.needs_confirmation is False
     assert p.safety_level == "safe"
 
