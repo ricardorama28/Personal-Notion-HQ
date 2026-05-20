@@ -1,6 +1,17 @@
 # Notion WhatsApp Bot
 
-Bot personal de WhatsApp que gestiona tu Notion (tareas, eventos, apuntes de facultad, diagramas) usando Claude con tool use.
+Bot personal de WhatsApp que gestiona tu Notion (PERSONAL HQ) usando Claude con tool use: tareas, eventos, notas/apuntes, diagramas, gastos, comidas y hábitos.
+
+## Estructura en Notion (10 DB bajo PERSONAL HQ)
+
+`Projects`, `Tasks`, `Events`, `Areas`, `Inbox/WhatsApp Log`, `Notes`,
+`Expenses`, `Meals`, `Habits`, `Habit Log` + dashboards.
+
+Cada mensaje de WhatsApp crea una fila en **Inbox/WhatsApp Log** y los
+registros que se generen (tarea, nota, gasto, comida, log de hábito) quedan
+vinculados a esa fila (relación `Inbox`, dual). Al terminar, la fila se cierra
+con `Processing Status` (Auto-processed / Needs review), `Detected Type` y
+`Action Taken`. Si llega el mismo `MessageSid` (retry de Twilio) no se duplica.
 
 ## Stack
 
@@ -18,7 +29,12 @@ cp .env.example .env
 # editar .env con tus valores reales
 ```
 
-Mapeá los 3 database IDs (entrá a cada DB en Notion como full page para identificarla).
+`.env.example` ya trae prellenados los 9 database IDs (Projects, Tasks, Events,
+Notes, Expenses, Meals, Habits, Habit Log, Inbox). Solo completá `NOTION_TOKEN`,
+`ANTHROPIC_API_KEY` y `MY_WHATSAPP`.
+
+La integración de Notion tiene que seguir compartida en la página **PERSONAL
+HQ**: las DB nuevas heredan el acceso. Verificá permisos con `GET /diag`.
 
 **IMPORTANTE:** rotá el `NOTION_TOKEN` si alguna vez quedó expuesto en chat o en un commit.
 
@@ -83,8 +99,10 @@ no es alcanzable y Twilio responde con su eco por defecto.
 Pasos:
 
 1. Setear **todas** las env vars en el dashboard de Railway (el `.env` local NO
-   se deploya): `NOTION_TOKEN`, `TASKS_DB_ID`, `EVENTS_DB_ID`, `PROJECTS_DB_ID`,
-   `ANTHROPIC_API_KEY`, `MY_WHATSAPP`.
+   se deploya): `NOTION_TOKEN`, `ANTHROPIC_API_KEY`, `MY_WHATSAPP` y los 9
+   IDs de DB (`TASKS_DB_ID`, `EVENTS_DB_ID`, `PROJECTS_DB_ID`, `NOTES_DB_ID`,
+   `EXPENSES_DB_ID`, `MEALS_DB_ID`, `HABITS_DB_ID`, `HABITLOG_DB_ID`,
+   `INBOX_DB_ID`). **Tras agregar los IDs nuevos hay que redeployar.**
 2. En el Sandbox de Twilio, "When a message comes in":
    `https://<tu-url-railway>/webhook`, método **HTTP POST**.
 

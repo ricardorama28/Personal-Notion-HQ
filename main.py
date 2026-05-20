@@ -16,6 +16,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 from prompts import SYSTEM
 from tools import TOOLS, execute_tool
+import notion_ops as ops
 from notion_ops import today_context, diagnostics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -96,8 +97,10 @@ def run_agent(messages: list) -> tuple[str, list]:
 
 
 @app.post("/webhook")
-async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...)):
-    log.info("inbound webhook From=%r Body=%r", From, Body[:80])
+async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...),
+                           MessageSid: str = Form(None)):
+    log.info("inbound webhook From=%r Body=%r sid=%r", From, Body[:80],
+             MessageSid)
 
     # solo respondemos a tu numero (comparacion normalizada)
     if normalize_whatsapp(From) != normalize_whatsapp(MY_NUMBER):
@@ -123,12 +126,34 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...)):
         twiml.message("✓ sesion limpia")
         return Response(content=str(twiml), media_type="application/xml")
 
+    # registrar el mensaje en Inbox/WhatsApp Log (con idempotencia por SID)
+    inbox_id = None
+    try:
+        inbox = ops.create_inbox_entry(Body, From, MessageSid)
+        if inbox.get("existing"):
+            log.info("mensaje duplicado (Twilio retry) sid=%r, se ignora",
+                     MessageSid)
+            twiml = MessagingResponse()
+            twiml.message("✓ ya recibido (no se duplicó)")
+            return Response(content=str(twiml), media_type="application/xml")
+        inbox_id = inbox.get("page_id")
+        ops.set_inbox(inbox_id)
+    except Exception as e:
+        log.warning("no se pudo registrar en Inbox: %s", e)
+
     history.append({"role": "user", "content": Body})
 
     try:
         reply, history = run_agent(history)
     except Exception as e:
         reply = f"error: {type(e).__name__}: {e}"
+    finally:
+        if inbox_id:
+            try:
+                ops.finalize_inbox(inbox_id, locals().get("reply", ""))
+            except Exception as e:
+                log.warning("no se pudo cerrar la fila de Inbox: %s", e)
+        ops.clear_inbox()
 
     # truncar historial (mantener pares completos)
     sessions[From] = history[-HISTORY_WINDOW:]
