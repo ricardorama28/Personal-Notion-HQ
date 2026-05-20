@@ -8,7 +8,6 @@ Log del mensaje en curso (via contextvar) y registran el tipo detectado
 para que el webhook pueda cerrar esa fila.
 """
 import contextvars
-import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional
@@ -17,17 +16,20 @@ import dateparser
 from notion_client import Client
 from notion_client.errors import APIResponseError
 
-notion = Client(auth=os.environ["NOTION_TOKEN"], notion_version="2022-06-28")
+import config
 
-TASKS_DB = os.environ["TASKS_DB_ID"]
-EVENTS_DB = os.environ["EVENTS_DB_ID"]
-PROJECTS_DB = os.environ["PROJECTS_DB_ID"]
-NOTES_DB = os.environ.get("NOTES_DB_ID", "")
-EXPENSES_DB = os.environ.get("EXPENSES_DB_ID", "")
-MEALS_DB = os.environ.get("MEALS_DB_ID", "")
-HABITS_DB = os.environ.get("HABITS_DB_ID", "")
-HABITLOG_DB = os.environ.get("HABITLOG_DB_ID", "")
-INBOX_DB = os.environ.get("INBOX_DB_ID", "")
+notion = Client(auth=config.NOTION_TOKEN or "missing-token",
+                notion_version="2022-06-28")
+
+TASKS_DB = config.TASKS_DB_ID
+EVENTS_DB = config.EVENTS_DB_ID
+PROJECTS_DB = config.PROJECTS_DB_ID
+NOTES_DB = config.NOTES_DB_ID
+EXPENSES_DB = config.EXPENSES_DB_ID
+MEALS_DB = config.MEALS_DB_ID
+HABITS_DB = config.HABITS_DB_ID
+HABITLOG_DB = config.HABITLOG_DB_ID
+INBOX_DB = config.INBOX_DB_ID
 
 # enums vivos (deben coincidir con el esquema de Notion)
 TASK_STATUS = {"To Do", "Doing", "Done"}
@@ -597,7 +599,7 @@ def _read_probe(db_id: str):
 def diagnostics() -> dict:
     """Solo probes de LECTURA (no escribe) para diagnosticar permisos."""
     return {
-        "token_set": bool(os.environ.get("NOTION_TOKEN")),
+        "token_set": bool(config.NOTION_TOKEN),
         "projects_db_read": _read_probe(PROJECTS_DB),
         "tasks_db_read": _read_probe(TASKS_DB),
         "events_db_read": _read_probe(EVENTS_DB),

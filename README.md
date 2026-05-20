@@ -122,6 +122,62 @@ to change this message"*, **Twilio no está llegando a la app**. Checklist:
 4. Si te responde `⚠️ No autorizado. Recibí From=...`: copiá ese valor exacto
    a la env var `MY_WHATSAPP` en Railway y redeployá.
 
+## Validacion de firma Twilio
+
+A partir de la Fase A reforzada, `/webhook` verifica el header
+`X-Twilio-Signature` con `TWILIO_AUTH_TOKEN`. Si la firma no es valida,
+el endpoint responde **403**.
+
+- En produccion (Railway / PC propia con tunel): `TWILIO_VALIDATE=true` y
+  `TWILIO_AUTH_TOKEN=<token>` (Twilio Console > Account > Auth Token).
+- En local con `curl` o `scripts/simulate_webhook.sh`: `TWILIO_VALIDATE=false`.
+
+La URL absoluta que se usa para validar respeta `X-Forwarded-Proto/Host`,
+asi que funciona detras de Railway o Cloudflare Tunnel sin configuracion
+extra.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+TWILIO_VALIDATE=false pytest -v
+```
+
+Cubren: tools de Notion (task, reminder, note, expense, meal, habit, event,
+unknown), webhook (firma, autorizacion, idempotencia, tamano, reset) e
+Inbox (cierre con Detected Type, Needs review cuando no hubo writes,
+recuperacion ante excepcion).
+
+## Simular webhook localmente
+
+```bash
+TWILIO_VALIDATE=false uvicorn main:app --reload --port 8000
+bash scripts/simulate_webhook.sh                  # corre toda la bateria
+bash scripts/simulate_webhook.sh "gasto 100 cafe" # un caso suelto
+```
+
+## Roadmap (Personal Orchestrator HQ)
+
+El MVP actual evoluciona en fases incrementales hacia un orquestador
+personal autoalojado. Cada fase entrega valor por si sola.
+
+- **Fase A** (actual): MVP estable. Firma Twilio, idempotencia, Inbox
+  endurecido, tests, `config.py` centralizado.
+- **Fase B**: Router de costo. Reglas/regex para mensajes obvios, Haiku
+  para clasificar, Sonnet solo cuando hace falta. Logging de tokens.
+- **Fase C**: Persistencia en Postgres. Tablas `messages`, `sessions`,
+  `agent_runs`, `tool_calls`, `cost_logs`.
+- **Fase D**: Docker Compose local (`web` + `postgres`, opcionales:
+  `redis`, `worker`, `cloudflared`).
+- **Fase E**: Webhook publico desde PC propia via Cloudflare Tunnel.
+  Railway queda como fallback documentado.
+- **Fase F**: Orchestrator central con `ActionPlan` y confirmaciones
+  para acciones destructivas.
+- **Fase G**: Agentes especializados (Capture / Planner / Writer /
+  Research / Critic-Safety).
+- **Fase H**: Workers async (`BackgroundTasks` → `rq` si crece).
+- **Fase I** (opcional): panel web `/admin` con FastAPI + Jinja2.
+
 ## Limites del MVP
 
 - Solo texto (sin audio, sin imagenes)
