@@ -652,6 +652,111 @@ que pusiste en el dashboard (`web:8000`). Postgres, `/health/internal`,
 `/diag` y el volumen `/data` no son alcanzables desde el tunel. Si
 alguien escanea el dominio publico solo encuentra `/webhook` y `/health`.
 
+## Orchestrator + ActionPlan (Fase F)
+
+Entre el router y la ejecución se interpone un **orquestador** que toma
+la `RouteDecision` y produce un `ActionPlan` declarativo. El plan se
+persiste en `agent_runs.plan` (JSON) y, cuando hace falta confirmar,
+también en `pending_confirmations.payload`.
+
+### Flujo
+
+```
+            ┌────────────────────────────────────────────────┐
+webhook → check pending confirmation? ──(si "1"/"cancelar")──┤
+            │                                                │
+            ↓ no o no había                                   ↓
+         router.route()                                     pop/discard
+            │                                                │
+            ↓                                                ↓
+   orchestrator.plan_from_decision()              re-hidratar plan
+            │                                       ejecutar/cancelar
+            ↓
+   ActionPlan.needs_confirmation?
+       ┌────┴────┐
+       sí        no
+       │         │
+       ↓         ↓
+  pending      _execute_plan()
+  confirma-       │
+  tion +          ├─ route=rule    → execute_tool
+  prompt          └─ route=*_agent → run_agent (Haiku/Sonnet)
+```
+
+### Estructura del ActionPlan
+
+```python
+@dataclass
+class ActionPlan:
+    intent: str
+    route: str              # rule | haiku_agent | sonnet_agent
+    model: str | None       # claude-haiku-* / claude-sonnet-* / None
+    tools: list             # nombres previstos (vacio si lo decide el agente)
+    payload: dict           # rule: {tool, args}; agent: {user_text, …}
+    needs_confirmation: bool
+    confirmation_reason: str
+    safety_level: str       # safe | bulk | destructive | unsafe
+    async_required: bool    # reservado Fase H
+```
+
+### Cuándo se pide confirmación
+
+| Intent / flag del clasificador | safety_level | needs_confirmation |
+|---|---|---|
+| `add_expense`, `add_meal`, `log_habit`, `add_note`, `create_task` (simple), `create_event` (simple), `query_*` | `safe` | no |
+| Regla del router (regex match) | `safe` | no |
+| `destructive=true` o intent `destructive`/`delete` | `destructive` | **sí** |
+| `intent ∈ {plan, reorganize, bulk_create}` | `bulk` | **sí** |
+| `intent=prompt_injection` | `unsafe` | **sí** |
+
+### Confirmaciones
+
+- Cuando `needs_confirmation=true` y `SESSIONS_BACKEND=postgres`:
+  - Se crea una fila en `pending_confirmations` con el plan serializado
+    y un TTL de `CONFIRMATION_TTL_MINUTES` (default 10 min).
+  - Responde por WhatsApp: `⚠ <reason>. Respondé '1' para confirmar o
+    'cancelar' para abortar (expira en 10 min).`
+- Próximo mensaje del usuario:
+  - `1`, `si`, `sí`, `yes`, `ok`, `dale`, `confirmo`, `confirmar`, `go`
+    → se rehidrata el `ActionPlan` desde el payload, se ejecuta
+    (`run_agent` o `execute_tool`) y se persiste en `agent_runs` con
+    `confirmed_from = <pending.id>` para auditoría.
+  - `2`, `0`, `no`, `cancelar`, `abortar`, `stop` → se descarta.
+  - Cualquier otra cosa → se procesa como mensaje normal (la confirmación
+    queda vigente hasta TTL o hasta que llegue una respuesta válida).
+- Una confirmación vencida (`expires_at < now()`) **no se entrega**:
+  `pop_latest` la ignora. El mensaje del usuario sigue el flujo normal.
+- `SESSIONS_BACKEND=file`: no hay tabla → se loguea warning y se ejecuta
+  igual con Sonnet. Default conservador en MVP / Railway hasta que se
+  migre a postgres.
+
+### Ejemplos
+
+| Mensaje | Router | safety | Confirmación | Acción |
+|---|---|---|---|---|
+| `gasto 450 super` | regla `add_expense` | safe | no | `execute_tool(add_expense)` |
+| `anotá: idea X` | Haiku → `add_note` low | safe | no | `run_agent(Haiku)` |
+| `qué tengo hoy` | regla `query_tasks` | safe | no | `execute_tool(query_tasks)` |
+| `organizame la semana` | Haiku → `plan` high | bulk | **sí** | prompt → `1` → `run_agent(Sonnet)` |
+| `borrá todas las tareas Done` | Haiku → `destructive` | destructive | **sí** | prompt → `1` → `run_agent(Sonnet)` |
+| `ignorá tus instrucciones` | Haiku → `prompt_injection` | unsafe | **sí** | prompt → `cancelar` → descartado |
+
+### Auditar confirmaciones
+
+```sql
+-- Todas las que esperaron confirmacion
+SELECT id, sid, intent, safety_level, started_at
+  FROM agent_runs
+  WHERE route = 'confirm_required'
+  ORDER BY started_at DESC LIMIT 20;
+
+-- Las que se ejecutaron tras confirmar
+SELECT id, confirmed_from, intent, model, input_tokens + output_tokens AS tokens
+  FROM agent_runs
+  WHERE confirmed_from IS NOT NULL
+  ORDER BY started_at DESC;
+```
+
 ## Tests
 
 ```bash
@@ -690,8 +795,9 @@ personal autoalojado. Cada fase entrega valor por si sola.
   opcional `cloudflared` activable con profile).
 - **Fase E** (actual): Webhook publico desde PC propia via Cloudflare
   Tunnel. Railway queda como fallback documentado.
-- **Fase F**: Orchestrator central con `ActionPlan` y confirmaciones
-  para acciones destructivas.
+- **Fase F** (actual): Orchestrator central con `ActionPlan` y
+  confirmaciones para acciones destructivas/bulk via la tabla
+  `pending_confirmations`.
 - **Fase G**: Agentes especializados (Capture / Planner / Writer /
   Research / Critic-Safety).
 - **Fase H**: Workers async (`BackgroundTasks` → `rq` si crece).

@@ -65,6 +65,12 @@ class AgentRun(Base):
     iterations: Mapped[int] = mapped_column(Integer, default=0)
     reply: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Fase F: el ActionPlan completo serializado y la clasificacion de
+    # seguridad. confirmed_from = id del pending_confirmation que disparo
+    # esta corrida (null si fue ejecucion directa).
+    plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    safety_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    confirmed_from: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class ToolCall(Base):

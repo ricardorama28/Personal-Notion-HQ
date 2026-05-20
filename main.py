@@ -17,9 +17,11 @@ import config
 import cost_log
 import db as db_mod
 import notion_ops as ops
+import orchestrator
 import repos
 import router as wpp_router
 from notion_ops import diagnostics, today_context
+from orchestrator import ActionPlan
 from prompts import SYSTEM
 from tools import TOOLS, execute_tool
 
@@ -196,6 +198,88 @@ def _twiml(text: str) -> Response:
     return Response(content=str(twiml), media_type="application/xml")
 
 
+async def _peek_and_pop_confirmation(session_key: str
+                                     ) -> tuple[str | None, dict | None]:
+    """Devuelve (confirmation_id, payload) si hay una pending vigente y la
+    consume. Si no hay nada, (None, None).
+
+    Usamos pop_latest del repo (que ya marca consumed=True y filtra
+    expires_at>now). El id lo recuperamos antes del pop con una query
+    paralela; si falla, devolvemos None — la idempotencia de pop_latest
+    nos protege de doble consumo.
+    """
+    from sqlalchemy import select
+    import models as M
+    async with db_mod.session_scope() as s:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        stmt = (select(M.PendingConfirmation)
+                .where(M.PendingConfirmation.session_key == session_key,
+                       M.PendingConfirmation.consumed.is_(False),
+                       M.PendingConfirmation.expires_at > now)
+                .order_by(M.PendingConfirmation.created_at.desc())
+                .limit(1))
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None, None
+        row.consumed = True
+        return row.id, dict(row.payload)
+
+
+async def _execute_plan(plan: ActionPlan, *, history: list, sid: str | None,
+                        sender: str, confirmed_from: str | None = None
+                        ) -> tuple[str, list, dict, str | None]:
+    """Ejecuta un ActionPlan ya autorizado (no pide confirmacion).
+
+    Retorna (reply, history, run_meta, agent_run_id). Persiste agent_run +
+    tool_calls + cost_logs cuando backend=postgres.
+    """
+    run_id = await repos.agent_runs.create(
+        sid=sid, session_key=sender, route=plan.route, intent=plan.intent,
+        model=plan.model, plan=plan.to_json(),
+        safety_level=plan.safety_level, confirmed_from=confirmed_from,
+    )
+
+    if plan.route == "rule":
+        tool = plan.payload.get("tool")
+        args = plan.payload.get("args") or {}
+        result = execute_tool(tool, args)
+        await repos.tool_calls.add(agent_run_id=run_id, sid=sid,
+                                   name=tool, args=args, result=result)
+        reply = _render_rule_result(plan.intent, result)
+        history.append({"role": "assistant", "content": reply})
+        rec = cost_log.log_event(
+            route="rule", intent=plan.intent, sid=sid,
+            extra={"tool": tool, "ok": "error" not in result,
+                   "confirmed_from": confirmed_from},
+        )
+        await repos.cost_logs.add(rec)
+        return reply, history, {"tool_calls": [
+            {"name": tool, "args": args, "result": result}
+        ]}, run_id
+
+    # agent path
+    reply, history, run_meta = run_agent(
+        history, model=plan.model or config.ORCHESTRATOR_MODEL,
+        sid=sid, intent=plan.intent,
+    )
+    for tc in run_meta.get("tool_calls", []):
+        await repos.tool_calls.add(agent_run_id=run_id, sid=sid,
+                                   name=tc["name"], args=tc["args"],
+                                   result=tc["result"])
+    await repos.cost_logs.add({
+        "ts": None, "sid": sid,
+        "route": ("haiku_agent" if run_meta.get("model") == config.ROUTER_MODEL
+                  else "sonnet_agent"),
+        "intent": plan.intent, "model": run_meta.get("model"),
+        "input_tokens": run_meta.get("input_tokens", 0),
+        "output_tokens": run_meta.get("output_tokens", 0),
+        "iterations": run_meta.get("iterations", 0),
+        "confirmed_from": confirmed_from,
+    })
+    return reply, history, run_meta, run_id
+
+
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request,
                            From: str = Form(...),
@@ -249,6 +333,57 @@ async def whatsapp_webhook(request: Request,
                 f"{k}={v}" for k, v in s["by_route"].items()))
         return _twiml("\n".join(lines))
 
+    # ----- Fase F: respuestas a confirmaciones pendientes -----
+    # Solo si backend=postgres. Sin DB no hay forma de recordar el plan.
+    if db_mod.is_postgres_enabled():
+        conf_kind = orchestrator.is_confirmation_reply(Body)
+        if conf_kind is not None:
+            pending_id, pending_payload = await _peek_and_pop_confirmation(From)
+            if pending_payload is not None:
+                if conf_kind is False:
+                    cost_log.log_event(route="admin", intent="confirm_cancel",
+                                       sid=MessageSid,
+                                       extra={"confirmed_from": pending_id})
+                    return _twiml("✓ cancelado")
+                # confirmar: rehidratar plan y ejecutar
+                try:
+                    plan = ActionPlan.from_json(pending_payload)
+                except Exception:
+                    log.exception("payload de confirmacion invalido")
+                    return _twiml("⚠️ confirmacion invalida, mandá de nuevo el mensaje original")
+                history = await repos.sessions.load(From)
+                history.append({"role": "user", "content": Body})
+                inbox_id = None
+                try:
+                    inbox = ops.create_inbox_entry(Body, From, MessageSid)
+                    inbox_id = inbox.get("page_id") if not inbox.get("existing") else None
+                    if inbox_id:
+                        ops.set_inbox(inbox_id)
+                except Exception as e:
+                    log.warning("inbox en confirmacion: %s", e)
+                try:
+                    reply, history, run_meta, _ = await _execute_plan(
+                        plan, history=history, sid=MessageSid,
+                        sender=From, confirmed_from=pending_id,
+                    )
+                except Exception as e:
+                    log.exception("error ejecutando plan confirmado")
+                    reply = f"error: {type(e).__name__}: {e}"
+                finally:
+                    if inbox_id:
+                        try:
+                            ops.finalize_inbox(inbox_id, reply or "(sin respuesta)")
+                        except Exception as e:
+                            log.warning("finalize_inbox: %s", e)
+                    ops.clear_inbox()
+                await repos.messages.add(sid=None, sender=From,
+                                         body=_sanitize_for_persist(reply),
+                                         direction="outbound")
+                await repos.sessions.save(From, history[-config.HISTORY_WINDOW:])
+                return _twiml(reply)
+            # Si no habia confirmacion pendiente, "1"/"si" se procesa como
+            # mensaje normal (puede ser intencional).
+
     inbox_id = None
     try:
         inbox = ops.create_inbox_entry(Body, From, MessageSid)
@@ -268,65 +403,58 @@ async def whatsapp_webhook(request: Request,
 
     reply = ""
     run_id: str | None = None
-    decision = None
     run_meta: dict = {}
     try:
         decision = wpp_router.route(Body, client)
         log.info("router decision: route=%s intent=%s model=%s reason=%s",
                  decision.route, decision.intent, decision.model, decision.reason)
 
-        run_id = await repos.agent_runs.create(
-            sid=MessageSid, session_key=From,
-            route=decision.route, intent=decision.intent,
-            model=decision.model,
-        )
-
-        if decision.route == wpp_router.ROUTE_RULE:
-            result = execute_tool(decision.tool, decision.tool_args or {})
-            await repos.tool_calls.add(agent_run_id=run_id, sid=MessageSid,
-                                       name=decision.tool,
-                                       args=decision.tool_args or {},
-                                       result=result)
-            reply = _render_rule_result(decision.intent, result)
-            history.append({"role": "assistant", "content": reply})
+        # Cost del router (clasificador Haiku) si consumio tokens.
+        if decision.router_input_tokens or decision.router_output_tokens:
             rec = cost_log.log_event(
-                route="rule", intent=decision.intent, sid=MessageSid,
-                extra={"tool": decision.tool, "ok": "error" not in result},
+                route="haiku_router", intent=decision.intent,
+                model=config.ROUTER_MODEL, sid=MessageSid,
+                input_tokens=decision.router_input_tokens,
+                output_tokens=decision.router_output_tokens,
+                extra={"confidence": decision.confidence,
+                       "destructive": decision.destructive,
+                       "reason": decision.reason},
             )
             await repos.cost_logs.add(rec)
-        else:
-            if decision.router_input_tokens or decision.router_output_tokens:
-                rec = cost_log.log_event(
-                    route="haiku_router", intent=decision.intent,
-                    model=config.ROUTER_MODEL, sid=MessageSid,
-                    input_tokens=decision.router_input_tokens,
-                    output_tokens=decision.router_output_tokens,
-                    extra={"confidence": decision.confidence,
-                           "destructive": decision.destructive,
-                           "reason": decision.reason},
-                )
-                await repos.cost_logs.add(rec)
-            reply, history, run_meta = run_agent(
-                history, model=decision.model or config.ORCHESTRATOR_MODEL,
-                sid=MessageSid, intent=decision.intent,
+
+        plan = orchestrator.plan_from_decision(decision, Body)
+        log.info("plan: intent=%s route=%s safety=%s confirm=%s",
+                 plan.intent, plan.route, plan.safety_level,
+                 plan.needs_confirmation)
+
+        # Si necesita confirmacion y tenemos DB: pedirla y salir aca.
+        if plan.needs_confirmation and db_mod.is_postgres_enabled():
+            cid = await repos.confirmations.create(
+                session_key=From, payload=plan.to_json())
+            run_id = await repos.agent_runs.create(
+                sid=MessageSid, session_key=From, route="confirm_required",
+                intent=plan.intent, model=plan.model, plan=plan.to_json(),
+                safety_level=plan.safety_level,
             )
-            # persistir tool_calls del agente
-            for tc in run_meta.get("tool_calls", []):
-                await repos.tool_calls.add(agent_run_id=run_id, sid=MessageSid,
-                                           name=tc["name"], args=tc["args"],
-                                           result=tc["result"])
-            # agente cost_log a postgres
-            await repos.cost_logs.add({
-                "ts": None, "sid": MessageSid,
-                "route": ("haiku_agent" if run_meta.get("model") == config.ROUTER_MODEL
-                          else "sonnet_agent"),
-                "intent": decision.intent, "model": run_meta.get("model"),
-                "input_tokens": run_meta.get("input_tokens", 0),
-                "output_tokens": run_meta.get("output_tokens", 0),
-                "iterations": run_meta.get("iterations", 0),
-            })
+            await repos.agent_runs.finish(run_id, reply="awaiting_confirmation")
+            cost_log.log_event(route="confirm_required", intent=plan.intent,
+                               sid=MessageSid,
+                               extra={"safety_level": plan.safety_level,
+                                      "confirmation_id": cid})
+            reply = orchestrator.confirmation_prompt(plan)
+            history.append({"role": "assistant", "content": reply})
+        else:
+            # Sin DB y plan.needs_confirmation=True: log de warning y cae
+            # al flujo Sonnet de siempre. Comportamiento MVP, documentado.
+            if plan.needs_confirmation:
+                log.warning("plan needs_confirmation=true pero backend=file: "
+                            "ejecutando sin confirmar (intent=%s safety=%s)",
+                            plan.intent, plan.safety_level)
+            reply, history, run_meta, run_id = await _execute_plan(
+                plan, history=history, sid=MessageSid, sender=From,
+            )
     except Exception as e:
-        log.exception("error en run_agent")
+        log.exception("error en orquestador/agente")
         reply = f"error: {type(e).__name__}: {e}"
         rec = cost_log.log_event(route="error", intent="exception",
                                  sid=MessageSid,
@@ -350,8 +478,10 @@ async def whatsapp_webhook(request: Request,
     )
 
     # outbound persistido (solo si backend=postgres) — sanitizado para no
-    # guardar detalles de excepcion en `messages.body`.
-    await repos.messages.add(sid=MessageSid, sender=From,
+    # guardar detalles de excepcion en `messages.body`. El SID es del
+    # inbound de Twilio; outbound no lleva sid (es respuesta nuestra),
+    # asi no chocamos con UNIQUE(messages.sid).
+    await repos.messages.add(sid=None, sender=From,
                              body=_sanitize_for_persist(reply),
                              direction="outbound")
 
