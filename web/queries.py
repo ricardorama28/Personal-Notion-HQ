@@ -93,11 +93,10 @@ async def session_cost_summary(session_key: str) -> dict:
             select(models.AgentRun)
             .where(models.AgentRun.session_key == session_key)
         )).scalars().all()
-        total = sum(0.0 for _ in rows)  # ver cost_logs vinculados via sid
         in_tok = sum((r.input_tokens or 0) for r in rows)
         out_tok = sum((r.output_tokens or 0) for r in rows)
-        # cost_usd lo agrega cost_logs; agregamos lo de runs
-        cost_rows = (await s.execute(
+        # cost_usd vive en cost_logs, vinculado via sid del agent_run.
+        total_usd = (await s.execute(
             select(func.coalesce(func.sum(models.CostLog.cost_usd), 0.0))
             .where(models.CostLog.sid.in_(
                 select(models.AgentRun.sid)
@@ -105,7 +104,7 @@ async def session_cost_summary(session_key: str) -> dict:
                        models.AgentRun.sid.is_not(None))
             ))
         )).scalar() or 0.0
-        return {"total_usd": round(float(cost_rows), 4),
+        return {"total_usd": round(float(total_usd), 4),
                 "messages": len(rows),
                 "input_tokens": in_tok, "output_tokens": out_tok}
 
@@ -275,26 +274,21 @@ def agents_overview() -> list:
 
 
 async def tool_usage(days: int = 7) -> list:
-    """Conteo y errores por tool en los ultimos N dias."""
+    """Conteo y errores por tool en los ultimos N dias.
+
+    Hacemos una sola query simple (name + ok) y agregamos en Python.
+    Evitamos `cast(ok AS JSON)` que no es portable entre SQLite y Postgres.
+    """
     if not db_mod.is_postgres_enabled():
         return []
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     async with db_mod.session_scope() as s:
         rows = (await s.execute(
-            select(models.ToolCall.name,
-                   func.count().label("n"),
-                   func.sum(func.cast(models.ToolCall.ok, models.JSON)).label("ok_sum"))
-            .where(models.ToolCall.ts >= cutoff)
-            .group_by(models.ToolCall.name)
-        )).all()
-    # Lo anterior puede fallar por cast en SQLite; lo hacemos manual:
-    async with db_mod.session_scope() as s:
-        all_rows = (await s.execute(
             select(models.ToolCall.name, models.ToolCall.ok)
             .where(models.ToolCall.ts >= cutoff)
         )).all()
     counts: dict = {}
-    for name, ok in all_rows:
+    for name, ok in rows:
         d = counts.setdefault(name, {"n": 0, "ok": 0, "err": 0})
         d["n"] += 1
         if ok:

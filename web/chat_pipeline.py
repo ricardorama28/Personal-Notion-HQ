@@ -179,9 +179,13 @@ async def send_message(*, session_key: str, body: str, anthropic_client,
 
         # Async branch (Fase H + I hardening): si el plan es async-eligible
         # y la UI nos paso un BackgroundTasks, encolamos y devolvemos ACK.
+        # Excepcion: backend=file no soporta trazabilidad persistente del
+        # run; en ese caso forzamos sync para no perder el resultado entre
+        # reinicios. UX previsible > paralelismo.
         import async_runner
         if (background_tasks is not None
-                and async_runner.should_run_async(plan)):
+                and async_runner.should_run_async(plan)
+                and db_mod.is_postgres_enabled()):
             run_id = await repos.agent_runs.create(
                 sid=None, session_key=session_key, route=plan.route,
                 intent=plan.intent, model=plan.model,

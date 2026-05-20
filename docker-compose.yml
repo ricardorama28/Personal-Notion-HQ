@@ -10,7 +10,10 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # Pin a version mayor + minor para reproducibilidad. Actualizar
+    # cambiando este tag y corriendo `make rebuild` (siempre verificar
+    # release notes de Postgres antes de mayor saltos).
+    image: postgres:16.4-alpine
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -71,7 +74,10 @@ services:
   # toca un puerto del host ni necesita abrir nada en el router.
   # ----------------------------------------------------------------------
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Pin a version concreta para evitar regresiones en upgrades automaticos.
+    # Para actualizar: ver https://github.com/cloudflare/cloudflared/releases
+    # y bumpear este tag. `make tunnel-up` rebuildea el contenedor.
+    image: cloudflare/cloudflared:2024.10.0
     restart: unless-stopped
     profiles: ["tunnel"]
     # Si CF_TUNNEL_TOKEN esta vacio, cloudflared sale con error claro al

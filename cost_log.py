@@ -58,11 +58,42 @@ def log_event(*, route: str, intent: Optional[str] = None,
         record.update(extra)
     try:
         config.COST_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_if_needed(config.COST_LOG_FILE,
+                          config.COST_LOG_MAX_BYTES,
+                          config.COST_LOG_BACKUPS)
         with config.COST_LOG_FILE.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         log.warning("no se pudo escribir cost_log: %s", e)
     return record
+
+
+def _rotate_if_needed(path, max_bytes: int, backups: int) -> None:
+    """Rotacion tipo RotatingFileHandler: si path > max_bytes, lo movemos
+    a path.1; lo anterior .1 → .2, etc.; el ultimo se descarta.
+
+    No-op si max_bytes <= 0, si backups <= 0, o si el archivo no supera
+    el limite. Tolerante a errores de filesystem (warning, no excepcion).
+    """
+    try:
+        if max_bytes <= 0 or backups <= 0:
+            return
+        if not path.exists() or path.stat().st_size < max_bytes:
+            return
+        # Borrar el mas viejo.
+        oldest = path.with_suffix(path.suffix + f".{backups}")
+        if oldest.exists():
+            oldest.unlink()
+        # Renombrar .N → .N+1, desde el penultimo hacia abajo.
+        for i in range(backups - 1, 0, -1):
+            src = path.with_suffix(path.suffix + f".{i}")
+            dst = path.with_suffix(path.suffix + f".{i+1}")
+            if src.exists():
+                src.rename(dst)
+        # path → path.1
+        path.rename(path.with_suffix(path.suffix + ".1"))
+    except Exception as e:
+        log.warning("no se pudo rotar cost_log: %s", e)
 
 
 def summary(last_n_days: int = 7) -> dict:

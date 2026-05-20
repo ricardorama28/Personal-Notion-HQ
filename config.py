@@ -109,3 +109,8 @@ def _default_path(env_name: str, filename: str) -> Path:
 
 SESSIONS_FILE = _default_path("SESSIONS_FILE", "wpp_sessions.json")
 COST_LOG_FILE = _default_path("COST_LOG_FILE", "wpp_cost_log.jsonl")
+# Rotacion JSONL: cuando el archivo pasa COST_LOG_MAX_BYTES, lo renombramos
+# a <archivo>.1, .2, ... hasta COST_LOG_BACKUPS. Default: 10 MB x 5 = 50 MB.
+COST_LOG_MAX_BYTES = int(os.environ.get("COST_LOG_MAX_BYTES",
+                                        str(10 * 1024 * 1024)))
+COST_LOG_BACKUPS = int(os.environ.get("COST_LOG_BACKUPS", "5"))

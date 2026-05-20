@@ -8,17 +8,37 @@
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
   <style>
+    /* CSS plano para chips. Tailwind via CDN no compone clases custom
+       en runtime, asi que los colores van inline aca. Mismo paleta que
+       Tailwind (emerald/sky/violet/rose/amber/slate). */
     [x-cloak] { display: none !important; }
-    .chip { @apply inline-block px-2 py-0.5 rounded text-xs font-mono; }
-    .chip-rule { @apply chip bg-emerald-100 text-emerald-800; }
-    .chip-haiku { @apply chip bg-sky-100 text-sky-800; }
-    .chip-sonnet { @apply chip bg-violet-100 text-violet-800; }
-    .chip-blocked { @apply chip bg-rose-100 text-rose-800; }
-    .chip-bulk { @apply chip bg-amber-100 text-amber-800; }
-    .chip-unsafe { @apply chip bg-red-200 text-red-900; }
-    .chip-safe { @apply chip bg-emerald-50 text-emerald-700; }
-    .chip-destructive { @apply chip bg-orange-200 text-orange-900; }
-    .chip-default { @apply chip bg-slate-100 text-slate-700; }
+    .chip {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+      line-height: 1rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .chip-rule        { background:#d1fae5; color:#065f46; }  /* emerald-100/800 */
+    .chip-haiku       { background:#e0f2fe; color:#075985; }  /* sky-100/800 */
+    .chip-sonnet      { background:#ede9fe; color:#5b21b6; }  /* violet-100/800 */
+    .chip-blocked     { background:#ffe4e6; color:#9f1239; }  /* rose-100/800 */
+    .chip-bulk        { background:#fef3c7; color:#92400e; }  /* amber-100/800 */
+    .chip-unsafe      { background:#fecaca; color:#7f1d1d; }  /* red-200/900 */
+    .chip-safe        { background:#ecfdf5; color:#047857; }  /* emerald-50/700 */
+    .chip-destructive { background:#fed7aa; color:#7c2d12; }  /* orange-200/900 */
+    .chip-default     { background:#f1f5f9; color:#334155; }  /* slate-100/700 */
+    /* Por compatibilidad, los chips agregan la base via composicion: */
+    .chip-rule, .chip-haiku, .chip-sonnet, .chip-blocked, .chip-bulk,
+    .chip-unsafe, .chip-safe, .chip-destructive, .chip-default {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+      line-height: 1rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
   </style>
 </head>
 <body class="h-full bg-slate-50 text-slate-800">
