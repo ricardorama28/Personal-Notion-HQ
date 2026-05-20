@@ -50,6 +50,11 @@ ASYNC_ENABLED = _bool("ASYNC_ENABLED", default=False)
 # Token compartido para endpoints sensibles (/health/internal, /diag).
 # Vacio = endpoints deshabilitados (404). Asi el default es el mas seguro.
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+# Fase I hardening:
+# - secure=true cuando todo esta detras de HTTPS (Cloudflare Tunnel).
+# - permitir o no `?token=` en URL (handy en dev, peligroso en tunel).
+ADMIN_COOKIE_SECURE = _bool("ADMIN_COOKIE_SECURE", default=False)
+ADMIN_LOGIN_QUERY_ENABLED = _bool("ADMIN_LOGIN_QUERY_ENABLED", default=True)
 
 # /docs, /redoc y /openapi.json de FastAPI. Default: deshabilitados (mas
 # seguro en self-hosted con tunel publico). En dev local, ENABLE_DOCS=true.

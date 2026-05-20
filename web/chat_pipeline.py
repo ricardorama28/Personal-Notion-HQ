@@ -49,12 +49,19 @@ def _sanitize_for_persist(text: str, limit: int = 500) -> str:
     return text[:limit]
 
 
-async def send_message(*, session_key: str, body: str, anthropic_client) -> dict:
+async def send_message(*, session_key: str, body: str, anthropic_client,
+                       background_tasks=None) -> dict:
     """Procesa un mensaje del usuario en el chat web.
 
     Retorna dict con campos para renderizar la UI:
       {reply, plan, run_id, route, intent, safety_level,
-       tool_calls, needs_confirmation, confirmation_id, error}
+       tool_calls, needs_confirmation, confirmation_id, async_dispatched,
+       error}
+
+    Si `ASYNC_ENABLED=true`, el plan es async-eligible y se paso
+    `background_tasks`, encolamos en lugar de ejecutar inline. El reply
+    devuelto es el ACK; el resultado real va al `agent_run` y se puede
+    refrescar desde la UI.
     """
     body = (body or "").strip()
     if not body:
@@ -169,6 +176,37 @@ async def send_message(*, session_key: str, body: str, anthropic_client) -> dict
                     "safety_level": plan.safety_level,
                     "needs_confirmation": True, "confirmation_id": cid,
                     "run_id": run_id}
+
+        # Async branch (Fase H + I hardening): si el plan es async-eligible
+        # y la UI nos paso un BackgroundTasks, encolamos y devolvemos ACK.
+        import async_runner
+        if (background_tasks is not None
+                and async_runner.should_run_async(plan)):
+            run_id = await repos.agent_runs.create(
+                sid=None, session_key=session_key, route=plan.route,
+                intent=plan.intent, model=plan.model,
+                plan=plan.to_json(), safety_level=plan.safety_level,
+                async_state="async_pending",
+            )
+            background_tasks.add_task(
+                async_runner.run_in_background,
+                plan_payload=plan.to_json(), sender=session_key,
+                sid=None, run_id=run_id, inbox_id=None,
+            )
+            reply = async_runner.ACK_REPLY
+            history.append({"role": "assistant", "content": reply})
+            await repos.messages.add(sid=None, sender=session_key, body=reply,
+                                     direction="outbound")
+            await repos.sessions.save(session_key,
+                                      history[-config.HISTORY_WINDOW:],
+                                      source="web")
+            return {"reply": reply, "plan": plan.to_json(),
+                    "route": plan.route, "intent": plan.intent,
+                    "safety_level": plan.safety_level,
+                    "model": plan.model,
+                    "run_id": run_id,
+                    "async_dispatched": True,
+                    "async_state": "async_pending"}
 
         from main import _execute_plan
         reply, history, run_meta, run_id = await _execute_plan(

@@ -351,3 +351,236 @@ def test_system_endpoint_json(client, admin):
     assert "async_enabled" in body
     # no debe filtrar tokens
     assert "ADMIN_TOKEN" not in str(body)
+
+
+# ---------- Hardening Fase I ----------
+
+def test_login_get_renders_form_without_token(client, monkeypatch):
+    """GET /admin/login sin query → muestra form HTML, no setea cookie."""
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    tc, _ = client
+    r = tc.get("/admin/login")
+    assert r.status_code == 200
+    assert "<form" in r.text and 'name="token"' in r.text
+    # ninguna cookie seteada
+    assert "set-cookie" not in {h.lower() for h in r.headers.keys()} or \
+           "admin_token" not in r.headers.get("set-cookie", "")
+
+
+def test_login_post_correct_token_sets_cookie(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    tc, _ = client
+    r = tc.post("/admin/login", data={"token": "T"}, follow_redirects=False)
+    assert r.status_code in (302, 303)
+    cookie = r.headers.get("set-cookie", "")
+    assert "admin_token=T" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=lax" in cookie.lower() or "samesite=lax" in cookie.lower()
+
+
+def test_login_post_wrong_token_blocks(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    tc, _ = client
+    r = tc.post("/admin/login", data={"token": "WRONG"},
+                follow_redirects=False)
+    # 400 (token invalido) y sin cookie de admin
+    assert r.status_code == 400
+    cookie = r.headers.get("set-cookie", "")
+    assert "admin_token=" not in cookie or "admin_token=WRONG" not in cookie
+
+
+def test_logout_clears_cookie(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    tc, _ = client
+    r = tc.get("/admin/logout", follow_redirects=False)
+    assert r.status_code == 302
+    cookie = r.headers.get("set-cookie", "")
+    # cookie con max-age=0 / expires en el pasado
+    assert "admin_token" in cookie
+    assert ("max-age=0" in cookie.lower() or "expires=" in cookie.lower())
+
+
+def test_cookie_respects_secure_flag(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    monkeypatch.setattr(config, "ADMIN_COOKIE_SECURE", True)
+    tc, _ = client
+    r = tc.post("/admin/login", data={"token": "T"}, follow_redirects=False)
+    cookie = r.headers.get("set-cookie", "")
+    assert "Secure" in cookie or "secure" in cookie
+
+
+def test_cookie_no_secure_when_flag_off(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    monkeypatch.setattr(config, "ADMIN_COOKIE_SECURE", False)
+    tc, _ = client
+    r = tc.post("/admin/login", data={"token": "T"}, follow_redirects=False)
+    cookie = r.headers.get("set-cookie", "")
+    assert "Secure" not in cookie and "secure" not in cookie
+
+
+def test_query_token_disabled_via_flag(client, monkeypatch):
+    """Con ADMIN_LOGIN_QUERY_ENABLED=false, ?token= no debe autenticar."""
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    monkeypatch.setattr(config, "ADMIN_LOGIN_QUERY_ENABLED", False)
+    tc, _ = client
+    # GET /admin/?token=T → require_admin no acepta query → 404
+    r = tc.get("/admin/?token=T")
+    assert r.status_code == 404
+    # GET /admin/login?token=T tampoco setea cookie: muestra form
+    r2 = tc.get("/admin/login?token=T", follow_redirects=False)
+    assert r2.status_code == 200
+    cookie = r2.headers.get("set-cookie", "")
+    assert "admin_token=T" not in cookie
+
+
+def test_query_token_enabled_via_flag_default(client, monkeypatch):
+    """Default ADMIN_LOGIN_QUERY_ENABLED=true: el atajo ?token= sigue
+    funcionando (compat)."""
+    import config
+    monkeypatch.setattr(config, "ADMIN_TOKEN", "T")
+    monkeypatch.setattr(config, "ADMIN_LOGIN_QUERY_ENABLED", True)
+    tc, _ = client
+    r = tc.get("/admin/?token=T")
+    assert r.status_code == 200
+
+
+# ---------- Chat web async ----------
+
+@pytest.fixture
+def async_on(monkeypatch):
+    import config
+    monkeypatch.setattr(config, "ASYNC_ENABLED", True)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_chat_web_async_enqueues_does_not_run_inline(client, fake_notion,
+                                                            pg_db, admin,
+                                                            async_on,
+                                                            monkeypatch):
+    """ASYNC_ENABLED=true + intent research desde chat web → encolado.
+    El handler NO debe llamar al agente Sonnet/Haiku (solo al
+    clasificador). El reply es el ACK; el agent_run queda async_pending
+    o, si TestClient ya corrió el background, async_done."""
+    import twilio_outbound
+    monkeypatch.setattr(twilio_outbound, "send",
+                        lambda to, body, client=None: True)
+    tc, ant = client
+
+    # Mockeamos para que detectemos cuantas veces se llamo al agente.
+    ant.messages.create.side_effect = [
+        _haiku_classifies("research", confidence=0.95),
+        # Si el background corre, llama al agente:
+        _ant_text("no tengo browsing"),
+    ]
+    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.pages.create.return_value = {"id": "p1"}
+    sk = "web:async1"
+    import repos
+    await repos.sessions.save(sk, [], source="web")
+    r = tc.post(f"/admin/c/{sk}/send", headers=admin,
+                data={"body": "investigá X"})
+    assert r.status_code == 200
+    # ACK con "Procesando" o "te respondo"
+    assert "background" in r.text.lower() or "procesando" in r.text.lower() \
+           or "toque" in r.text.lower()
+
+    # Hay un agent_run vinculado a este session_key con async_state
+    import models, db
+    from sqlalchemy import select
+    async with db.session_scope() as s:
+        runs = (await s.execute(
+            select(models.AgentRun)
+            .where(models.AgentRun.session_key == sk,
+                   models.AgentRun.async_state.is_not(None))
+        )).scalars().all()
+        assert len(runs) == 1
+        assert runs[0].async_state in ("async_pending", "async_running",
+                                       "async_done")
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_chat_web_sync_when_async_disabled(client, fake_notion, pg_db,
+                                                  admin):
+    """ASYNC_ENABLED=false (default): research se ejecuta inline."""
+    tc, ant = client
+    ant.messages.create.side_effect = [
+        _haiku_classifies("research", confidence=0.95),
+        _ant_text("no tengo browsing"),
+    ]
+    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.pages.create.return_value = {"id": "p1"}
+    sk = "web:sync1"
+    import repos
+    await repos.sessions.save(sk, [], source="web")
+    r = tc.post(f"/admin/c/{sk}/send", headers=admin,
+                data={"body": "investigá X"})
+    assert r.status_code == 200
+    # Sin Procesando — vino el reply real
+    assert "browsing" in r.text.lower()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_chat_web_capture_stays_sync_with_async_on(client, fake_notion,
+                                                          pg_db, admin,
+                                                          async_on):
+    """Aunque ASYNC_ENABLED=true, capture (add_note) sigue inline."""
+    tc, ant = client
+    ant.messages.create.side_effect = [
+        _haiku_classifies("add_note", confidence=0.9),
+        _ant_text("✓ nota guardada"),
+    ]
+    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.pages.create.return_value = {"id": "p1"}
+    sk = "web:capsync"
+    import repos
+    await repos.sessions.save(sk, [], source="web")
+    r = tc.post(f"/admin/c/{sk}/send", headers=admin,
+                data={"body": "anotá: idea X"})
+    assert r.status_code == 200
+    assert "nota guardada" in r.text.lower()
+    assert "procesando" not in r.text.lower()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_run_status_endpoint_for_async_pending(client, pg_db, admin):
+    """GET /admin/runs/{id}/status devuelve fragment con estado actual
+    y mantiene polling si async_pending/running."""
+    import repos
+    run_id = await repos.agent_runs.create(
+        sid=None, session_key="web:st", route="research_agent",
+        intent="research", model="haiku", plan={},
+        safety_level="safe", async_state="async_pending")
+    tc, _ = client
+    r = tc.get(f"/admin/runs/{run_id}/status", headers=admin)
+    assert r.status_code == 200
+    assert "async_pending" in r.text
+    # contiene hx-trigger para seguir polleando
+    assert "hx-trigger" in r.text
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_run_status_endpoint_stops_polling_on_done(client, pg_db, admin):
+    import repos, models, db
+    from sqlalchemy import update
+    run_id = await repos.agent_runs.create(
+        sid=None, session_key="web:st2", route="research_agent",
+        intent="research", model="haiku", plan={},
+        safety_level="safe", async_state="async_pending")
+    async with db.session_scope() as s:
+        await s.execute(update(models.AgentRun)
+                        .where(models.AgentRun.id == run_id)
+                        .values(async_state="async_done",
+                                reply="✓ listo"))
+    tc, _ = client
+    r = tc.get(f"/admin/runs/{run_id}/status", headers=admin)
+    assert r.status_code == 200
+    assert "done" in r.text.lower() or "✓" in r.text
+    # NO debe tener hx-trigger (polling detenido)
+    assert "hx-trigger" not in r.text

@@ -33,7 +33,10 @@ async def require_admin(
     Tambien permite ?token=... como fallback para el primer GET cuando
     no hay cookie todavia (util para abrir desde un bookmark).
     """
-    token_q = request.query_params.get("token", "")
+    # `?token=` solo se acepta si el flag esta on (default true por compat).
+    # En self-hosted/tunel conviene apagarlo para forzar el form POST.
+    token_q = (request.query_params.get("token", "")
+               if config.ADMIN_LOGIN_QUERY_ENABLED else "")
     candidates = [x_admin_token, admin_token or "", token_q]
     if not config.ADMIN_TOKEN:
         raise HTTPException(status_code=404, detail="not found")

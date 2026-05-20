@@ -975,12 +975,29 @@ existencia a scanners.
 
 ```bash
 make up
-# abrir en el browser:
+# opción 1 (recomendada): abrir el formulario
+http://localhost:8000/admin/login
+# y pegar el ADMIN_TOKEN
+
+# opción 2 (atajo de dev, solo si ADMIN_LOGIN_QUERY_ENABLED=true):
 http://localhost:8000/admin/login?token=<ADMIN_TOKEN>
-# setea cookie httpOnly y redirige a /admin/
 ```
 
-Alternativa para CLI: header `X-Admin-Token: <token>` o query `?token=`.
+Alternativa CLI: header `X-Admin-Token: <token>` o (si el flag está on)
+`?token=` en cualquier ruta.
+
+### Login form, logout y cookie
+
+- **GET `/admin/login`** → form HTML con campo `token` (autofocus,
+  type=password). POST envía a `/admin/login`.
+- **POST `/admin/login`** con token correcto → setea cookie
+  `admin_token` (`HttpOnly`, `SameSite=lax`, `Secure` si
+  `ADMIN_COOKIE_SECURE=true`) y redirige a `/admin/`.
+- **GET `/admin/logout`** → borra la cookie y redirige al form.
+- Sin `ADMIN_TOKEN` configurado → todo `/admin/*` devuelve 404
+  (deshabilita la UI por completo).
+- `ADMIN_LOGIN_QUERY_ENABLED=false` desactiva el atajo `?token=`. En
+  self-hosted/túnel **se recomienda** apagarlo.
 
 ### Acceder via Cloudflare Tunnel
 
@@ -1061,12 +1078,23 @@ inaccesible. La cookie es `httponly`+`samesite=lax`. Cuando todo sea HTTPS
 - Tocar tablas SQL directamente.
 - Modificar schema desde la UI.
 
+### Async en el chat web
+
+Si `ASYNC_ENABLED=true` y el plan es async-eligible
+(planner/writer/research o `async_required`), el chat **no ejecuta
+inline**: crea `agent_run` con `async_state=async_pending`, encola en
+`BackgroundTasks`, y devuelve un fragment con tarjeta "⏳ Procesando en
+background…" que se auto-refresca cada 3 s contra
+`/admin/runs/{id}/status`. Cuando termina (`async_done`/`async_error`),
+el polling se detiene y la tarjeta muestra el resultado o el error
+sanitizado.
+
+Capture (gastos, notas, hábitos, tareas simples) siempre corre inline.
+
 ### Limitaciones actuales
 
-1. **No streaming**: el chat web hoy ejecuta sincronicamente. Si el plan
-   es async-elegible (planner/writer/research con `ASYNC_ENABLED=true`),
-   se ejecuta inline igual para el canal web; la versión async/streaming
-   queda como mejora futura (SSE).
+1. **No streaming SSE/WebSocket** — el polling cada 3 s alcanza para
+   uso personal. Si crece, migrar a SSE o WebSockets.
 2. **Sin búsqueda full-text** en mensajes; solo prefijo en sidebar.
 3. **Sin pruebas E2E con browser** — solo TestClient. Para clicks reales
    convendría Playwright en un sprint dedicado.

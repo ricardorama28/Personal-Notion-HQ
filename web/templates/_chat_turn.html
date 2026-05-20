@@ -21,8 +21,17 @@
       {% if result.intent %}<span class="chip-default">{{ result.intent }}</span>{% endif %}
       {% if result.model %}<span class="chip-default">{{ result.model }}</span>{% endif %}
       {% if result.safety_level %}<span class="chip-{{ result.safety_level }}">{{ result.safety_level }}</span>{% endif %}
+      {% if result.async_state %}<span class="chip-{{ 'unsafe' if result.async_state=='async_error' else 'bulk' if result.async_state in ('async_pending','async_running') else 'safe' }}">{{ result.async_state }}</span>{% endif %}
       {% if result.run_id %}<a class="chip-default hover:underline" href="/admin/runs/{{ result.run_id }}">run →</a>{% endif %}
     </div>
+    {% if result.async_dispatched %}
+      <div class="mt-2 border border-amber-200 bg-amber-50 rounded p-2 text-xs"
+           hx-get="/admin/runs/{{ result.run_id }}/status"
+           hx-trigger="load delay:2s, every 3s"
+           hx-swap="innerHTML">
+        ⏳ Procesando en background…
+      </div>
+    {% endif %}
     {% if result.tool_calls %}
       <details class="mt-2 text-xs text-slate-500">
         <summary class="cursor-pointer">tool_calls ({{ result.tool_calls|length }})</summary>

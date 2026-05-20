@@ -25,8 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import (APIRouter, Body, Cookie, Depends, Form, HTTPException,
-                     Request, Response)
+from fastapi import (APIRouter, BackgroundTasks, Body, Cookie, Depends, Form,
+                     HTTPException, Request, Response)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -57,18 +57,53 @@ templates.env.filters["fmt_ts"] = _fmt_ts
 # ---------- Login (set cookie) ----------
 
 @router.get("/login", response_class=HTMLResponse)
-async def login(request: Request, token: Optional[str] = None):
-    """GET /admin/login?token=... → set cookie httpOnly y redirect a /admin/.
+async def login_form(request: Request, token: Optional[str] = None):
+    """GET /admin/login → muestra formulario para mandar el token por POST.
 
-    Sin token o token incorrecto → 404 para no revelar la UI.
+    Si ADMIN_LOGIN_QUERY_ENABLED=true y viene `?token=<good>`, mantiene el
+    atajo viejo: setea cookie y redirige. Si el flag esta off, ignora el
+    query y muestra el form (mas seguro detras de un tunel publico).
+
+    Sin ADMIN_TOKEN seteado → 404 (UI deshabilitada).
     """
     if not config.ADMIN_TOKEN:
         raise HTTPException(status_code=404)
-    if not token or not check_token(token):
+    if (token and config.ADMIN_LOGIN_QUERY_ENABLED and check_token(token)):
+        resp = RedirectResponse("/admin/", status_code=302)
+        resp.set_cookie("admin_token", token, httponly=True, samesite="lax",
+                        secure=config.ADMIN_COOKIE_SECURE)
+        return resp
+    return templates.TemplateResponse(
+        request, "login.html",
+        {"query_enabled": config.ADMIN_LOGIN_QUERY_ENABLED},
+    )
+
+
+@router.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request, token: str = Form(...)):
+    """POST del formulario de login. Token correcto → cookie + redirect."""
+    if not config.ADMIN_TOKEN:
         raise HTTPException(status_code=404)
-    resp = RedirectResponse("/admin/", status_code=302)
+    if not check_token(token):
+        # Re-renderizar form con error. Mismo template, mismo 200 visualmente,
+        # pero con flag de error. No 401 (no diferenciamos contra scanners).
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"query_enabled": config.ADMIN_LOGIN_QUERY_ENABLED,
+             "error": "token invalido"},
+            status_code=400,
+        )
+    resp = RedirectResponse("/admin/", status_code=303)
     resp.set_cookie("admin_token", token, httponly=True, samesite="lax",
-                    secure=False)  # secure=True cuando todo sea https
+                    secure=config.ADMIN_COOKIE_SECURE)
+    return resp
+
+
+@router.get("/logout")
+async def logout():
+    """Borra la cookie admin y redirige al form de login."""
+    resp = RedirectResponse("/admin/login", status_code=302)
+    resp.delete_cookie("admin_token")
     return resp
 
 
@@ -127,12 +162,17 @@ async def chat_view(request: Request, session_key: str):
 
 @router.post("/c/{session_key}/send", response_class=HTMLResponse,
              dependencies=[Depends(require_admin)])
-async def chat_send(request: Request, session_key: str,
-                     body: str = Form(...)):
-    """Procesa el mensaje y devuelve un fragment HTMX con la respuesta."""
+async def chat_send(request: Request, background_tasks: BackgroundTasks,
+                     session_key: str, body: str = Form(...)):
+    """Procesa el mensaje y devuelve un fragment HTMX con la respuesta.
+
+    Si el plan es async-eligible y ASYNC_ENABLED=true, encola en
+    background_tasks; el fragment muestra ACK + "Procesando…".
+    """
     from main import client as anthropic
     result = await chat_pipeline.send_message(
         session_key=session_key, body=body, anthropic_client=anthropic,
+        background_tasks=background_tasks,
     )
     return templates.TemplateResponse(
         request, "_chat_turn.html", {"user_text": body, "result": result,
@@ -142,10 +182,12 @@ async def chat_send(request: Request, session_key: str,
 
 @router.post("/c/{session_key}/approve", response_class=HTMLResponse,
              dependencies=[Depends(require_admin)])
-async def chat_approve(request: Request, session_key: str):
+async def chat_approve(request: Request, background_tasks: BackgroundTasks,
+                        session_key: str):
     from main import client as anthropic
     result = await chat_pipeline.send_message(
         session_key=session_key, body="1", anthropic_client=anthropic,
+        background_tasks=background_tasks,
     )
     return templates.TemplateResponse(
         request, "_chat_turn.html", {"user_text": "(confirmar)", "result": result,
@@ -185,6 +227,35 @@ async def run_detail(request: Request, run_id: str):
         raise HTTPException(status_code=404)
     return templates.TemplateResponse(
         request, "run_detail.html", {"run": run},
+    )
+
+
+@router.get("/runs/{run_id}/status", response_class=HTMLResponse,
+            dependencies=[Depends(require_admin)])
+async def run_status_fragment(request: Request, run_id: str):
+    """Fragment HTMX que muestra el estado actual de un async run.
+
+    Polled cada 3s desde la tarjeta 'Procesando…'. Para async_done o
+    async_error detiene el polling (el contenedor se reemplaza por
+    contenido final sin `hx-trigger`).
+    """
+    run = await queries.get_run(run_id)
+    if run is None:
+        return HTMLResponse("<div class='text-xs text-slate-400'>run no encontrado</div>")
+    state = run.get("async_state") or "—"
+    if state in ("async_done", "async_error"):
+        ok = state == "async_done"
+        return HTMLResponse(
+            f"<div class='text-xs {'text-emerald-700' if ok else 'text-rose-700'}'>"
+            f"{'✓ done' if ok else '⚠ error'}: "
+            f"{(run.get('reply') if ok else run.get('error') or '')[:300]}"
+            f"</div>"
+        )
+    return HTMLResponse(
+        f"<div class='text-xs text-amber-700' "
+        f"hx-get='/admin/runs/{run_id}/status' "
+        f"hx-trigger='every 3s' hx-swap='innerHTML'>"
+        f"⏳ {state}…</div>"
     )
 
 
