@@ -136,6 +136,27 @@ La URL absoluta que se usa para validar respeta `X-Forwarded-Proto/Host`,
 asi que funciona detras de Railway o Cloudflare Tunnel sin configuracion
 extra.
 
+## Router de costo (Fase B)
+
+`router.py` decide como procesar cada mensaje:
+
+1. **Reglas regex** (0 tokens):
+   - `gasto/gasté <monto> <texto>` → `add_expense` directo, infiere
+     categoria y metodo cuando hay keywords (super, débito, etc.).
+   - `qué tengo hoy/mañana/esta semana/proxima semana` → `query_tasks`
+     directo con rango de fechas.
+2. **Clasificador Haiku** devuelve `{intent, complexity, confidence,
+   destructive}`:
+   - `complexity=low` + `confidence ≥ ROUTER_CONFIDENCE_THRESHOLD` →
+     loop de tool use con **Haiku** (barato).
+   - `intent ∈ {plan, write, research}`, `complexity=high`, `destructive`
+     o `prompt_injection` → loop con **Sonnet**.
+   - Bad JSON, error o baja confianza → fallback a Sonnet.
+3. `ROUTER_ENABLED=false` salta el router y usa siempre `ORCHESTRATOR_MODEL`.
+
+Comando WhatsApp `/cost` muestra los ultimos 7 dias (USD, tokens,
+distribucion por ruta) leyendo `COST_LOG_FILE` (JSONL).
+
 ## Tests
 
 ```bash
@@ -161,10 +182,11 @@ bash scripts/simulate_webhook.sh "gasto 100 cafe" # un caso suelto
 El MVP actual evoluciona en fases incrementales hacia un orquestador
 personal autoalojado. Cada fase entrega valor por si sola.
 
-- **Fase A** (actual): MVP estable. Firma Twilio, idempotencia, Inbox
+- **Fase A**: MVP estable. Firma Twilio, idempotencia, Inbox
   endurecido, tests, `config.py` centralizado.
-- **Fase B**: Router de costo. Reglas/regex para mensajes obvios, Haiku
-  para clasificar, Sonnet solo cuando hace falta. Logging de tokens.
+- **Fase B** (actual): Router de costo. Reglas/regex para mensajes obvios,
+  Haiku para clasificar, Sonnet solo cuando hace falta. Logging de tokens
+  y costo a JSONL (`COST_LOG_FILE`). Comando `/cost` por WhatsApp.
 - **Fase C**: Persistencia en Postgres. Tablas `messages`, `sessions`,
   `agent_runs`, `tool_calls`, `cost_logs`.
 - **Fase D**: Docker Compose local (`web` + `postgres`, opcionales:

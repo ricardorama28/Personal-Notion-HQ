@@ -22,6 +22,12 @@ def _bool(name: str, default: bool = False) -> bool:
 # ---------- Anthropic ----------
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+# Router (Fase B): clasificador barato + modelo "fuerte" del orquestador.
+ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "claude-haiku-4-5-20251001")
+ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", CLAUDE_MODEL)
+ROUTER_ENABLED = _bool("ROUTER_ENABLED", default=True)
+ROUTER_CONFIDENCE_THRESHOLD = float(os.environ.get(
+    "ROUTER_CONFIDENCE_THRESHOLD", "0.7"))
 
 # ---------- Twilio ----------
 MY_WHATSAPP = os.environ.get("MY_WHATSAPP", "")
@@ -45,3 +51,4 @@ SESSIONS_FILE = Path(os.environ.get("SESSIONS_FILE", "/tmp/wpp_sessions.json"))
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
 HISTORY_WINDOW = int(os.environ.get("HISTORY_WINDOW", "30"))
 MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", "4096"))
+COST_LOG_FILE = Path(os.environ.get("COST_LOG_FILE", "/tmp/wpp_cost_log.jsonl"))
