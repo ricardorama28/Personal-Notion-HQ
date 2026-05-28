@@ -106,7 +106,7 @@ def test_chat_web_async_file_backend_falls_back_to_sync(client, fake_notion,
         _haiku_classifies("research", confidence=0.95),
         _ant_text("no tengo browsing habilitado"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
 
     sk = "web:fb1"

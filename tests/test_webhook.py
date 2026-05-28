@@ -95,14 +95,14 @@ def test_idempotent_same_sid(client, fake_notion, no_router):
     tc, ant = client
     _fake_anthropic_text(ant, "✓ tarea creada")
 
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_1"}
     r1 = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                     "Body": "tarea: comprar leche",
                                     "MessageSid": "SMsame"})
     assert r1.status_code == 200 and "tarea creada" in r1.text
 
-    fake_notion.databases.query.return_value = {"results": [{"id": "inbox_1"}]}
+    fake_notion.data_sources.query.return_value = {"results": [{"id": "inbox_1"}]}
     r2 = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                     "Body": "tarea: comprar leche",
                                     "MessageSid": "SMsame"})
@@ -113,7 +113,7 @@ def test_unknown_message_closes_inbox_as_needs_review(client, fake_notion,
                                                       no_router):
     tc, ant = client
     _fake_anthropic_text(ant, "no entendi, podés repetir?")
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_unk"}
 
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
@@ -131,7 +131,7 @@ def test_unknown_message_closes_inbox_as_needs_review(client, fake_notion,
 def test_run_agent_exception_still_closes_inbox(client, fake_notion, no_router):
     tc, ant = client
     ant.messages.create.side_effect = RuntimeError("boom")
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_err"}
 
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
@@ -148,7 +148,7 @@ def test_run_agent_exception_still_closes_inbox(client, fake_notion, no_router):
 def test_router_rule_expense_skips_llm(client, fake_notion):
     """Mensaje 'gasto X' debe matchear la regla y NO llamar a Anthropic."""
     tc, ant = client
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_r1"}
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                    "Body": "gasto 450 super con debito",
@@ -173,7 +173,7 @@ def test_router_haiku_then_sonnet(client, fake_notion):
     "research" para ejercitar la ruta Sonnet sin disparar el gate.
     """
     tc, ant = client
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_r2"}
     _router_then_agent(
         ant,
@@ -191,7 +191,7 @@ def test_router_haiku_then_sonnet(client, fake_notion):
 def test_router_bulk_intent_blocked_in_file_backend(client, fake_notion):
     """Con backend=file, intent='plan' (bulk) se rechaza explicitamente."""
     tc, ant = client
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_pl"}
     _router_then_agent(
         ant,
@@ -211,7 +211,7 @@ def test_router_haiku_low_complexity_uses_haiku_agent(client, fake_notion):
     """Clasificador dice low+alta confianza → loop de tool use con Haiku."""
     tc, ant = client
     import config
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_r3"}
     _router_then_agent(
         ant,

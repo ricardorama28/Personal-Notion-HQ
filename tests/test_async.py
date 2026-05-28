@@ -143,7 +143,7 @@ def test_webhook_plan_intent_with_async_disabled_stays_sync(client,
         _haiku_classifies("research", confidence=0.9),
         _ant_text("respuesta sync"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                    "Body": "investigá X",
@@ -166,7 +166,7 @@ def test_webhook_research_with_async_on_enqueues(client, fake_notion,
         # le damos una respuesta razonable por las dudas.
         _ant_text("✓ research stub"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                    "Body": "investigá las opciones",
@@ -193,7 +193,7 @@ async def test_webhook_async_worker_marks_done(client, fake_notion, pg_db,
         _haiku_classifies("research", confidence=0.9),
         _ant_text("no tengo browsing habilitado"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                    "Body": "investigá precios",
@@ -240,7 +240,7 @@ async def test_webhook_async_worker_marks_error(client, fake_notion, pg_db,
     side.call = 0
     ant.messages.create.side_effect = side
 
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                    "Body": "investigá X",
@@ -280,7 +280,7 @@ async def test_confirmation_accepted_with_async_enqueues(client, fake_notion,
         _haiku_classifies("plan", complexity="high", confidence=0.95),
         _ant_text("✓ semana organizada"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     # paso 1: pedido → crea pending
     r1 = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
@@ -323,7 +323,7 @@ def test_capture_intent_still_sync_with_async_on(client, fake_notion,
         _haiku_classifies("add_note", confidence=0.95),
         _ant_text("✓ nota guardada"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     r = tc.post("/webhook", data={"From": "whatsapp:+5491100000000",
                                    "Body": "anotá: idea",

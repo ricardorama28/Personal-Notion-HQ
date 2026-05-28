@@ -134,7 +134,7 @@ async def test_chat_send_runs_pipeline_and_persists(client, fake_notion,
         _haiku_classifies("add_note"),
         _ant_text("✓ nota guardada"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     sk = "web:abc123"
     import repos
@@ -255,7 +255,7 @@ async def test_approve_confirmation_executes_plan(client, fake_notion,
         _haiku_classifies("destructive", destructive=True),
         _ant_text('{"verdict":"ok","reason":"r"}'),  # critic OK
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     r = tc.post(f"/admin/c/{sk}/send", headers=admin,
                 data={"body": "borrá tareas viejas"})
@@ -285,7 +285,7 @@ async def test_cancel_confirmation_discards(client, fake_notion, pg_db,
         _haiku_classifies("destructive", destructive=True),
         _ant_text('{"verdict":"ok","reason":"r"}'),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     tc.post(f"/admin/c/{sk}/send", headers=admin,
             data={"body": "borrá X"})
@@ -479,7 +479,7 @@ async def test_chat_web_async_enqueues_does_not_run_inline(client, fake_notion,
         # Si el background corre, llama al agente:
         _ant_text("no tengo browsing"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     sk = "web:async1"
     import repos
@@ -514,7 +514,7 @@ async def test_chat_web_sync_when_async_disabled(client, fake_notion, pg_db,
         _haiku_classifies("research", confidence=0.95),
         _ant_text("no tengo browsing"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     sk = "web:sync1"
     import repos
@@ -536,7 +536,7 @@ async def test_chat_web_capture_stays_sync_with_async_on(client, fake_notion,
         _haiku_classifies("add_note", confidence=0.9),
         _ant_text("✓ nota guardada"),
     ]
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "p1"}
     sk = "web:capsync"
     import repos

@@ -19,7 +19,7 @@ from notion_client.errors import APIResponseError
 import config
 
 notion = Client(auth=config.NOTION_TOKEN or "missing-token",
-                notion_version="2022-06-28")
+                notion_version="2025-09-03")
 
 TASKS_DB = config.TASKS_DB_ID
 EVENTS_DB = config.EVENTS_DB_ID
@@ -48,6 +48,32 @@ EXPENSE_CATEGORIES = {"Supermercado", "Comida", "Transporte", "Servicios",
 EXPENSE_METHODS = {"Efectivo", "Débito", "Crédito", "Transferencia"}
 MEAL_TYPES = {"Desayuno", "Almuerzo", "Merienda", "Cena", "Snack"}
 HABIT_STATUS = {"Done", "Skipped"}
+
+
+# ---------- Data source resolver (API 2025-09-03) ----------
+
+_ds_cache: dict = {}
+
+
+def _data_source_id(db_id: Optional[str]) -> Optional[str]:
+    """Resuelve el data_source_id principal de una DB. Cachea por proceso.
+
+    Notion API 2025-09-03 movio query() de databases a data_sources. Cada
+    database tiene N data sources; en este workspace todas son single-source,
+    asi que tomamos el primero. Si la resolucion falla, devolvemos el db_id
+    como fallback (mocks de tests no implementan retrieve)."""
+    if not db_id:
+        return None
+    if db_id in _ds_cache:
+        return _ds_cache[db_id]
+    try:
+        info = notion.databases.retrieve(database_id=db_id)
+        sources = info.get("data_sources") or []
+        ds_id = sources[0]["id"] if sources else db_id
+    except Exception:
+        ds_id = db_id
+    _ds_cache[db_id] = ds_id
+    return ds_id
 
 
 # ---------- contexto de Inbox (por request) ----------
@@ -124,7 +150,7 @@ def _extract_title(page: dict) -> str:
 @lru_cache(maxsize=1)
 def _projects_index() -> dict:
     """Mapa nombre_lowercase -> page_id. Se cachea en memoria del proceso."""
-    res = notion.databases.query(database_id=PROJECTS_DB)
+    res = notion.data_sources.query(data_source_id=_data_source_id(PROJECTS_DB))
     out = {}
     for row in res["results"]:
         name = _extract_title(row).strip()
@@ -162,7 +188,7 @@ def _habits_index() -> dict:
     """Mapa nombre_lowercase -> {id, name, active}."""
     if not HABITS_DB:
         return {}
-    res = notion.databases.query(database_id=HABITS_DB)
+    res = notion.data_sources.query(data_source_id=_data_source_id(HABITS_DB))
     out = {}
     for row in res["results"]:
         name = _extract_title(row).strip()
@@ -207,8 +233,8 @@ def create_inbox_entry(raw: str, sender: str,
 
     if twilio_sid:
         try:
-            found = notion.databases.query(
-                database_id=INBOX_DB, page_size=1,
+            found = notion.data_sources.query(
+                data_source_id=_data_source_id(INBOX_DB), page_size=1,
                 filter={"property": "Twilio SID",
                         "rich_text": {"equals": twilio_sid}},
             )
@@ -333,12 +359,12 @@ def query_tasks(status: Optional[str] = None, project: Optional[str] = None,
         if d:
             filters.append({"property": "Due", "date": {"on_or_after": d}})
 
-    query = {"database_id": TASKS_DB, "page_size": limit,
+    query = {"data_source_id": _data_source_id(TASKS_DB), "page_size": limit,
              "sorts": [{"property": "Due", "direction": "ascending"}]}
     if filters:
         query["filter"] = {"and": filters} if len(filters) > 1 else filters[0]
 
-    res = notion.databases.query(**query)
+    res = notion.data_sources.query(**query)
     tasks = []
     for row in res["results"]:
         p = row["properties"]
@@ -397,12 +423,12 @@ def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
             filters.append({"property": "Project",
                             "relation": {"contains": sid}})
 
-    query = {"database_id": EVENTS_DB, "page_size": limit,
+    query = {"data_source_id": _data_source_id(EVENTS_DB), "page_size": limit,
              "sorts": [{"property": "Date", "direction": "ascending"}]}
     if filters:
         query["filter"] = {"and": filters} if len(filters) > 1 else filters[0]
 
-    res = notion.databases.query(**query)
+    res = notion.data_sources.query(**query)
     events = []
     for row in res["results"]:
         p = row["properties"]
@@ -588,7 +614,8 @@ def _read_probe(db_id: str):
     if not db_id:
         return "not_configured"
     try:
-        notion.databases.query(database_id=db_id, page_size=1)
+        notion.data_sources.query(data_source_id=_data_source_id(db_id),
+                                  page_size=1)
         return "ok"
     except APIResponseError as e:
         return {"status": e.status, "code": e.code, "message": str(e)}

@@ -58,7 +58,7 @@ def test_add_meal(fake_notion):
 def test_log_habit(fake_notion):
     import notion_ops as ops
     # poblar el indice de habitos
-    fake_notion.databases.query.return_value = {
+    fake_notion.data_sources.query.return_value = {
         "results": [{
             "id": "habit_run",
             "properties": {
@@ -78,7 +78,7 @@ def test_log_habit(fake_notion):
 
 def test_log_habit_unknown(fake_notion):
     import notion_ops as ops
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     ops._habits_index.cache_clear()
     r = ops.log_habit(habit_name="cosa_inexistente")
     assert "error" in r

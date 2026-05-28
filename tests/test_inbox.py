@@ -4,13 +4,13 @@
 def test_create_inbox_entry_idempotent(fake_notion):
     import notion_ops as ops
     # primera llamada: no encuentra existing → crea
-    fake_notion.databases.query.return_value = {"results": []}
+    fake_notion.data_sources.query.return_value = {"results": []}
     fake_notion.pages.create.return_value = {"id": "inbox_new"}
     r1 = ops.create_inbox_entry("hola", "whatsapp:+54900", "SMabc")
     assert r1 == {"page_id": "inbox_new", "existing": False}
 
     # segunda llamada con mismo SID: encuentra existing → no crea
-    fake_notion.databases.query.return_value = {"results": [{"id": "inbox_new"}]}
+    fake_notion.data_sources.query.return_value = {"results": [{"id": "inbox_new"}]}
     r2 = ops.create_inbox_entry("hola", "whatsapp:+54900", "SMabc")
     assert r2 == {"page_id": "inbox_new", "existing": True}
 
