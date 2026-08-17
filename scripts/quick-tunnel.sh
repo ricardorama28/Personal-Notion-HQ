@@ -46,12 +46,35 @@ if [[ -z "$URL" ]]; then
 fi
 
 echo "──> Verificando el túnel de punta a punta…"
-if curl -fsS -m 20 "$URL/health" | grep -q '"ok"'; then
+
+# El hostname recien creado tarda unos segundos en resolver por DNS. Un solo
+# intento fallaba con "Could not resolve host" y hacia parecer que el tunel
+# estaba roto cuando en realidad solo faltaba esperar. Reintentamos ~60s.
+VERIFIED=""
+for _ in $(seq 1 20); do
+  if curl -fsS -m 10 "$URL/health" 2>/dev/null | grep -q '"ok"'; then
+    VERIFIED=1
+    break
+  fi
+  sleep 3
+done
+
+if [[ -n "$VERIFIED" ]]; then
   echo "  ✓ $URL/health responde"
 else
-  echo "  ✗ El túnel está arriba pero /health no responde a través de él." >&2
-  echo "    Probá local:  curl -s http://localhost:8000/health" >&2
-  exit 1
+  # No es fatal: el tunel esta levantado y la URL es valida. Lo mas comun es
+  # que el DNS todavia no haya propagado. Damos la URL igual para no bloquear.
+  echo "  ! No se pudo verificar /health a traves del tunel todavia."
+  echo "    Casi siempre es DNS que aun no propago. Reintenta en un minuto:"
+  echo "        curl -s $URL/health"
+  echo "    Si local responde ($(curl -fsS -m 5 http://localhost:8000/health 2>/dev/null || echo 'sin respuesta')),"
+  echo "    la app esta bien y el problema es solo de propagacion."
+  echo
+  echo "    Linea cruda de cloudflared, para confirmar el hostname exacto:"
+  # `|| true` obligatorio: con pipefail, un grep sin matches abortaria el
+  # script justo antes de imprimir la URL, que es lo unico que se vino a buscar.
+  { "${COMPOSE[@]}" logs --no-color "$SVC" 2>/dev/null \
+      | grep -F 'trycloudflare.com' | tail -2 | sed 's/^/      /'; } || true
 fi
 
 cat <<EOF
