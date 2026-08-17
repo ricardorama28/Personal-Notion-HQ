@@ -44,11 +44,21 @@ validar que todo anda antes de decidir dónde hostear en serio.
 
 ```bash
 # macOS
-brew install --cask docker
-open -a Docker          # abrilo una vez y esperá a que arranque el daemon
+brew install --cask docker-desktop
 
+# Abrilo por ruta, no por nombre: recién instalado, macOS todavía no lo
+# indexó y `open -a Docker` falla con "Unable to find application named".
+open /Applications/Docker.app
+
+# Esperá a que la ballena de la barra de menú deje de animarse, y recién ahí:
+docker info             # no debe dar error
 docker compose version  # debe imprimir v2.x
 ```
+
+Instalar no alcanza: **hay que arrancar Docker Desktop al menos una vez**. El
+daemon apagado es distinto de Docker sin instalar, y hasta el primer arranque
+el plugin `compose` tampoco queda registrado. Si te salteás este paso,
+`make up` corta con un mensaje que te dice cuál de las tres cosas falta.
 
 Ojo con la sintaxis: los targets llevan guión. Es `make tunnel-up`, no
 `make tunnel up` — esto último hace que `make` busque dos targets separados y
@@ -141,6 +151,8 @@ Y abrí el Command Center en `http://localhost:8000/admin/login`.
 | Contesta pero nada en Notion | Token revocado o DBs no compartidas | `/diag` lo detalla; recompartir las 10 DBs con la integración |
 | `/diag`: `AttributeError: 'DatabasesEndpoint' object has no attribute 'query'` | `notion-client` >= 2.6 | Ver abajo |
 | `make: No rule to make target 'tunnel'` | Falta el guión | `make tunnel-up` |
+| `docker-compose: No such file or directory` | Docker Desktop instalado pero sin arrancar | `open /Applications/Docker.app` |
+| `⚠ web no llego a healthy` pero el contenedor anda | Versiones viejas del Makefile llamaban a `python`, que no existe en macOS | Ya corregido: usa `$(PY)` |
 
 Para el caso del `403`: desde esta versión el log incluye la URL que la app
 usó para validar. Comparala carácter por carácter con la de la consola de
