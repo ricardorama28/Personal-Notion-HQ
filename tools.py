@@ -80,6 +80,48 @@ TOOLS = [
         }
     },
     {
+        "name": "create_events_recurring",
+        "description": (
+            "Crea una SERIE de eventos repetidos en el calendario: los dias de "
+            "semana indicados, entre dos fechas (ambas inclusive). Usala cuando "
+            "el pedido sea recurrente ('todos los lunes y miercoles hasta el 27 "
+            "de noviembre') en vez de llamar create_event muchas veces. Expande "
+            "el rango sola y no duplica fechas que ya tengan ese evento."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nombre del evento, igual para toda la serie"},
+                "weekdays": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Dias de la semana, ej. ['lunes', 'miercoles']"
+                },
+                "date_from": {"type": "string", "description": "Fecha de inicio. Natural o YYYY-MM-DD"},
+                "date_until": {"type": "string", "description": "Fecha de fin, inclusive. Natural o YYYY-MM-DD"},
+                "event_type": {"type": "string", "enum": ["Class", "Exam", "Appointment", "Deadline", "Personal"]},
+                "project": {"type": "string", "description": "Proyecto si aplica"}
+            },
+            "required": ["name", "weekdays", "date_from", "date_until"]
+        }
+    },
+    {
+        "name": "create_project",
+        "description": (
+            "Crea un proyecto nuevo en la DB Projects. Usala cuando Vale pida "
+            "explicitamente crear/agregar un proyecto. Si ya existe uno con ese "
+            "nombre lo devuelve en vez de duplicarlo."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nombre del proyecto"},
+                "status": {"type": "string", "description": "Estado inicial, si la DB lo tiene. Opcional."}
+            },
+            "required": ["name"]
+        }
+    },
+    {
         "name": "query_events",
         "description": "Busca eventos del calendario. Sin filtros devuelve los proximos.",
         "input_schema": {
@@ -175,6 +217,8 @@ DISPATCH = {
     "update_task": ops.update_task,
     "query_tasks": ops.query_tasks,
     "create_event": ops.create_event,
+    "create_events_recurring": ops.create_events_recurring,
+    "create_project": ops.create_project,
     "query_events": ops.query_events,
     "add_note": ops.add_note,
     "create_diagram": ops.create_diagram,

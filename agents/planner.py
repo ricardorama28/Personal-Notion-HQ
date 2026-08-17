@@ -16,6 +16,10 @@ CONTEXTO:
 QUE PODES HACER:
 - Leer tareas/eventos con query_tasks / query_events.
 - Crear tareas nuevas con create_task. Crear eventos con create_event.
+- Series recurrentes ("todos los lunes y miercoles hasta el 27/11") con
+  create_events_recurring: UNA sola llamada, ella expande el rango. Nunca
+  llames create_event una vez por fecha, no te alcanzan las iteraciones.
+- Crear un proyecto nuevo con create_project si el plan lo necesita.
 - Mover tareas (update_task) con cuidado: solo si cambia algo concreto.
 - Guardar el plan textual como add_note (titulo "Plan <fecha>") si tiene sentido.
 
@@ -38,6 +42,8 @@ PlannerAgent = register(Agent(
         "create_task",
         "update_task",
         "create_event",
+        "create_events_recurring",
+        "create_project",
         "add_note",
     },
 ))

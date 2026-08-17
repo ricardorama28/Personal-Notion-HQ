@@ -44,12 +44,17 @@ def fake_notion(monkeypatch):
     mock = MagicMock(name="notion_client")
     # defaults razonables para que list_projects/list_habits no exploten
     mock.databases.query.return_value = {"results": []}
+    # esquema minimo de PROJECTS_DB para create_project (se descubre en runtime)
+    mock.databases.retrieve.return_value = {
+        "properties": {"Name": {"type": "title"}}
+    }
     mock.pages.create.return_value = {"id": "page_fake_id",
                                       "url": "https://notion.so/fake"}
     mock.pages.update.return_value = {"id": "page_fake_id"}
     monkeypatch.setattr(notion_ops, "notion", mock)
     # limpiar caches lru_cache
     notion_ops._projects_index.cache_clear()
+    notion_ops._projects_schema.cache_clear()
     notion_ops._habits_index.cache_clear()
     notion_ops.clear_inbox()
     return mock

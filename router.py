@@ -153,7 +153,11 @@ Posibles intents:
 - add_meal: registrar una comida.
 - log_habit: registrar un habito hecho.
 - create_task: crear tarea o recordatorio.
-- create_event: crear evento de calendario.
+- create_event: crear UN evento de calendario en una fecha puntual.
+- bulk_create: crear una SERIE de eventos recurrentes (ej. "todos los lunes y
+  miercoles hasta el 27 de noviembre"). Cualquier pedido con dias de la semana
+  repetidos o un rango de fechas va aca, no en create_event.
+- create_project: crear un proyecto nuevo.
 - add_note: guardar nota/idea/apunte.
 - query_tasks: consultar tareas pendientes.
 - query_events: consultar eventos.

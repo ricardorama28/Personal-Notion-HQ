@@ -8,7 +8,8 @@ Log del mensaje en curso (via contextvar) y registran el tipo detectado
 para que el webhook pueda cerrar esa fila.
 """
 import contextvars
-from datetime import datetime, timezone
+import unicodedata
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Optional
 
@@ -48,6 +49,21 @@ EXPENSE_CATEGORIES = {"Supermercado", "Comida", "Transporte", "Servicios",
 EXPENSE_METHODS = {"Efectivo", "Débito", "Crédito", "Transferencia"}
 MEAL_TYPES = {"Desayuno", "Almuerzo", "Merienda", "Cena", "Snack"}
 HABIT_STATUS = {"Done", "Skipped"}
+
+# Dias de la semana en es/en -> numero de weekday() (lunes=0).
+WEEKDAYS = {
+    "lunes": 0, "monday": 0, "lun": 0, "mon": 0,
+    "martes": 1, "tuesday": 1, "mar": 1, "tue": 1,
+    "miercoles": 2, "wednesday": 2, "mie": 2, "wed": 2,
+    "jueves": 3, "thursday": 3, "jue": 3, "thu": 3,
+    "viernes": 4, "friday": 4, "vie": 4, "fri": 4,
+    "sabado": 5, "saturday": 5, "sab": 5, "sat": 5,
+    "domingo": 6, "sunday": 6, "dom": 6, "sun": 6,
+}
+
+# Tope de eventos por llamada a create_events_recurring. Existe para que un
+# rango mal parseado (ej. "hasta 2030") no dispare cientos de escrituras.
+MAX_RECURRING_EVENTS = 200
 
 
 # ---------- contexto de Inbox (por request) ----------
@@ -153,6 +169,72 @@ def _find_project_id(name: str) -> Optional[str]:
         if key in k or k in key:
             return v["id"]
     return None
+
+
+@lru_cache(maxsize=1)
+def _projects_schema() -> dict:
+    """Propiedades de PROJECTS_DB, cacheadas.
+
+    A diferencia del resto de las DB, el esquema de Projects no esta
+    replicado en constantes arriba: no sabemos como se llaman sus columnas.
+    Lo descubrimos en runtime en vez de asumir "Name"/"Status".
+    """
+    return notion.databases.retrieve(database_id=PROJECTS_DB).get("properties", {})
+
+
+def _title_prop_name(props: dict) -> str:
+    """Nombre de la propiedad de tipo title (la que hace de titulo de fila)."""
+    for name, spec in props.items():
+        if spec.get("type") == "title":
+            return name
+    return "Name"
+
+
+def create_project(name: str, status: Optional[str] = None) -> dict:
+    """Crea un proyecto en PROJECTS_DB.
+
+    Setea el titulo siempre; `status` es best-effort: solo se aplica si la DB
+    tiene una propiedad select/status con ese nombre de opcion.
+    """
+    name = (name or "").strip()
+    if not name:
+        return {"error": "el proyecto necesita un nombre"}
+
+    # No duplicar: si ya existe con ese nombre, devolvemos el que hay.
+    idx = _projects_index()
+    existing = idx.get(name.lower())
+    if existing:
+        return {"ok": True, "existing": True, "project_id": existing["id"],
+                "name": existing["name"]}
+
+    try:
+        schema = _projects_schema()
+    except APIResponseError as e:
+        return {"error": f"no pude leer el esquema de Projects: {e}"}
+
+    props = {_title_prop_name(schema): {"title": _title(name)}}
+
+    if status:
+        for prop_name, spec in schema.items():
+            kind = spec.get("type")
+            if kind not in ("select", "status"):
+                continue
+            options = (spec.get(kind) or {}).get("options", [])
+            match = next((o["name"] for o in options
+                          if o.get("name", "").lower() == status.lower()), None)
+            if match:
+                props[prop_name] = {kind: {"name": match}}
+                break
+
+    page = notion.pages.create(parent={"database_id": PROJECTS_DB},
+                               properties=props)
+
+    # Sin esto, _projects_index() sigue devolviendo el cache viejo por el resto
+    # de la vida del proceso y create_task/create_event no encontrarian el
+    # proyecto recien creado.
+    _projects_index.cache_clear()
+    _record_write(None)
+    return {"ok": True, "project_id": page["id"], "name": name}
 
 
 # ---------- Habits (cache) ----------
@@ -378,6 +460,157 @@ def create_event(name: str, date: str, event_type: Optional[str] = None,
     _record_write(None)
     return {"ok": True, "event_id": page["id"], "name": name, "date": d,
             "type": et}
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", text)
+                   if unicodedata.category(c) != "Mn")
+
+
+def _weekday_numbers(weekdays: list) -> tuple:
+    """['lunes', 'Miércoles'] -> ([0, 2], []). Devuelve (numeros, no_reconocidos)."""
+    nums, unknown = [], []
+    for raw in weekdays or []:
+        key = _strip_accents(str(raw)).strip().lower()
+        if key in WEEKDAYS:
+            n = WEEKDAYS[key]
+            if n not in nums:
+                nums.append(n)
+        else:
+            unknown.append(str(raw))
+    return sorted(nums), unknown
+
+
+def expand_weekdays(date_from: str, date_until: str, weekdays: list) -> dict:
+    """Expande un rango a las fechas concretas que caen en esos dias.
+
+    Separada de la creacion para poder testearla sin tocar Notion. Ambos
+    extremos del rango son inclusivos.
+    """
+    start = _parse_date(date_from)
+    end = _parse_date(date_until)
+    if not start:
+        return {"error": f"no pude parsear la fecha de inicio '{date_from}'"}
+    if not end:
+        return {"error": f"no pude parsear la fecha de fin '{date_until}'"}
+
+    nums, unknown = _weekday_numbers(weekdays)
+    if unknown:
+        return {"error": f"no reconozco estos dias: {', '.join(unknown)}"}
+    if not nums:
+        return {"error": "necesito al menos un dia de la semana"}
+
+    d0 = date.fromisoformat(start)
+    d1 = date.fromisoformat(end)
+    if d1 < d0:
+        return {"error": f"el rango esta invertido: {start} es posterior a {end}"}
+
+    dates = []
+    cur = d0
+    while cur <= d1:
+        if cur.weekday() in nums:
+            dates.append(cur.isoformat())
+            if len(dates) > MAX_RECURRING_EVENTS:
+                return {"error": f"el rango genera mas de {MAX_RECURRING_EVENTS} "
+                                 f"eventos ({start} a {end}); acotalo"}
+        cur += timedelta(days=1)
+
+    return {"dates": dates, "date_from": start, "date_until": end}
+
+
+def _existing_event_dates(name: str, date_from: str, date_to: str) -> set:
+    """Fechas del rango que ya tienen un evento con este nombre.
+
+    Pagina la query porque el rango puede contener muchos eventos ajenos y
+    un page_size fijo dejaria duplicados afuera del chequeo.
+    """
+    target = name.strip().lower()
+    found, cursor = set(), None
+    for _ in range(10):  # tope de paginas; 10 x 100 = 1000 eventos
+        query = {
+            "database_id": EVENTS_DB,
+            "page_size": 100,
+            "filter": {"and": [
+                {"property": "Date", "date": {"on_or_after": date_from}},
+                {"property": "Date", "date": {"on_or_before": date_to}},
+            ]},
+        }
+        if cursor:
+            query["start_cursor"] = cursor
+        res = notion.databases.query(**query)
+        for row in res.get("results", []):
+            if _extract_title(row).strip().lower() != target:
+                continue
+            d = (row["properties"].get("Date", {}).get("date") or {}).get("start")
+            if d:
+                found.add(d[:10])
+        if not res.get("has_more"):
+            break
+        cursor = res.get("next_cursor")
+    return found
+
+
+def create_events_recurring(name: str, weekdays: list, date_from: str,
+                            date_until: str, event_type: Optional[str] = None,
+                            project: Optional[str] = None) -> dict:
+    """Crea una serie de eventos: los `weekdays` entre dos fechas, inclusive.
+
+    Expande el rango del lado del servidor y crea todo en una sola tool call.
+    Si el modelo emitiera un create_event por fecha, chocaria contra el tope
+    de iteraciones del agente (agents/base.py) mucho antes de terminar.
+    """
+    exp = expand_weekdays(date_from, date_until, weekdays)
+    if "error" in exp:
+        return exp
+    dates = exp["dates"]
+    if not dates:
+        return {"error": f"no hay ninguna de esas fechas entre "
+                         f"{exp['date_from']} y {exp['date_until']}"}
+
+    et = "Personal"
+    if event_type:
+        et = event_type if event_type in EVENT_TYPES else \
+            EVENT_TYPE_ES.get(event_type.lower(), "Personal")
+
+    project_id = _find_project_id(project) if project else None
+    if project and not project_id:
+        return {"error": f"No encontre el proyecto '{project}'. "
+                         f"Disponibles: {list_projects()['projects']}"}
+
+    # Repetir el mismo pedido no debe duplicar la serie entera.
+    already = _existing_event_dates(name, exp["date_from"], exp["date_until"])
+
+    created, skipped, failed = [], [], []
+    for d in dates:
+        if d in already:
+            skipped.append(d)
+            continue
+        props = {
+            "Name": {"title": _title(name)},
+            "Date": {"date": {"start": d}},
+            "Type": {"select": {"name": et}},
+        }
+        if project_id:
+            props["Project"] = {"relation": [{"id": project_id}]}
+        try:
+            notion.pages.create(parent={"database_id": EVENTS_DB},
+                                properties=props)
+            created.append(d)
+            _record_write(None)
+        except APIResponseError as e:
+            # No abortamos: informamos parciales para que el usuario sepa
+            # exactamente que quedo cargado y que no.
+            failed.append({"date": d, "error": str(e)})
+
+    out = {"ok": True, "name": name, "type": et,
+           "date_from": exp["date_from"], "date_until": exp["date_until"],
+           "created": len(created), "created_dates": created}
+    if skipped:
+        out["skipped_existing"] = len(skipped)
+        out["skipped_dates"] = skipped
+    if failed:
+        out["failed"] = failed
+    return out
 
 
 def query_events(date_from: Optional[str] = None, date_to: Optional[str] = None,

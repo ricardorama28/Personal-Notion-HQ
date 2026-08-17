@@ -32,6 +32,7 @@ _INTENT_TO_AGENT = {
     "add_note": "capture_agent",
     "create_task": "capture_agent",
     "create_event": "capture_agent",
+    "create_project": "capture_agent",
     "query_tasks": "capture_agent",
     "query_events": "capture_agent",
     # planificacion (Sonnet, requiere confirmacion por bulk)
@@ -59,7 +60,7 @@ def select_agent(intent: str) -> str | None:
 # Intents que el agente puede ejecutar sin pedir confirmacion.
 SAFE_AGENT_INTENTS = {
     "add_expense", "add_meal", "log_habit", "add_note",
-    "create_task", "create_event",
+    "create_task", "create_event", "create_project",
     "query_tasks", "query_events", "query_notes",
 }
 
