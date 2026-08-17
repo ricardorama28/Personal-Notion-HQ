@@ -5,6 +5,7 @@
 ```bash
 make logs                  # tail -f de todos los servicios
 make ps                    # estado de los contenedores
+make reactivate            # diagnostico end-to-end (ver docs/REACTIVATION.md)
 make tunnel-status         # confirma que el dominio público responde
 make psql                  # psql adentro del contenedor postgres
 make shell                 # bash en el contenedor web

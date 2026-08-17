@@ -314,7 +314,19 @@ async def whatsapp_webhook(request: Request,
     form_dict = {k: v for k, v in form_data.items()}
 
     if not await _validate_twilio(request, form_dict):
-        log.warning("firma Twilio invalida o ausente (sid=%r)", MessageSid)
+        # La URL validada es el dato clave: Twilio firma sobre la URL que
+        # vos configuraste en la consola, y aca la reconstruimos desde los
+        # headers del proxy. Si difieren en una letra (http vs https, host
+        # viejo, barra final) la firma nunca valida y el mensaje se cae con
+        # 403 sin dejar rastro. Sin secretos: solo URL y booleanos.
+        log.warning(
+            "firma Twilio invalida o ausente (sid=%r) — URL validada=%r, "
+            "firma presente=%s, auth_token seteado=%s. Si esa URL no coincide "
+            "EXACTA con la de Twilio Console, la firma nunca valida.",
+            MessageSid, _public_url(request),
+            bool(request.headers.get("x-twilio-signature")),
+            bool(config.TWILIO_AUTH_TOKEN),
+        )
         return Response(status_code=403, content="invalid signature")
 
     log.info("inbound webhook From=%s sid=%r len=%d",

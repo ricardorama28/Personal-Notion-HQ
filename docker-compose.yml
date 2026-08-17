@@ -90,6 +90,28 @@ services:
     logging: *default-logging
     # Sin ports, sin volumenes. Solo egress saliente hacia Cloudflare:7844.
 
+  # ----------------------------------------------------------------------
+  # Quick tunnel de Cloudflare. Solo arranca con --profile quick-tunnel.
+  #
+  # A diferencia de `cloudflared` (arriba), NO necesita token ni dominio
+  # propio: Cloudflare asigna una URL efimera *.trycloudflare.com. Sirve
+  # para validar el flujo end-to-end sin infra, tipico al reactivar el
+  # proyecto despues de un tiempo parado (ver docs/REACTIVATION.md).
+  #
+  # Limitacion: la URL CAMBIA en cada arranque, asi que hay que reapuntar
+  # el webhook en la consola de Twilio cada vez. Para uso diario usa el
+  # perfil "tunnel", que tiene hostname estable.
+  # ----------------------------------------------------------------------
+  cloudflared-quick:
+    image: cloudflare/cloudflared:2024.10.0
+    restart: unless-stopped
+    profiles: ["quick-tunnel"]
+    command: tunnel --no-autoupdate --url http://web:8000
+    depends_on:
+      web:
+        condition: service_healthy
+    logging: *default-logging
+
 volumes:
   pgdata:
     name: personal-notion-hq_pgdata

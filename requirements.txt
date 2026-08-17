@@ -1,7 +1,12 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 anthropic>=0.40.0
-notion-client>=2.2.1,<3
+# CUIDADO con el techo: notion-client 2.6.0 eliminó `databases.query()` al
+# adoptar la API de data sources de Notion (version 2025-09-03). notion_ops.py
+# usa `notion.databases.query()` en 6 lugares, asi que con >=2.6 todas las
+# lecturas revientan con AttributeError y /diag lo reporta en las 9 DBs.
+# Migrar a DataSourcesEndpoint antes de levantar este techo.
+notion-client>=2.2.1,<2.6
 twilio>=9.0.0
 python-dotenv>=1.0.0
 python-multipart>=0.0.9

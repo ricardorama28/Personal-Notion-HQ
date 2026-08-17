@@ -3,7 +3,7 @@
 # Detecta docker compose v2 (`docker compose`) o v1 (`docker-compose`).
 COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
-.PHONY: help up down logs ps build rebuild migrate shell psql test test-docker smoke clean backup restore tunnel-up tunnel-down tunnel-logs tunnel-status
+.PHONY: help up down logs ps build rebuild migrate shell psql test test-docker smoke clean backup restore tunnel-up tunnel-down tunnel-logs tunnel-status reactivate quick-tunnel quick-logs quick-down
 
 help: ## Mostrar comandos disponibles
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -56,6 +56,18 @@ smoke: ## Smoke check: /health + simulacion de webhook contra el contenedor
 	@curl -sS http://localhost:$${WEB_PORT:-8000}/health | python -m json.tool
 	@echo "→ webhook (TWILIO_VALIDATE=false en .env para esto)"
 	@WEBHOOK_URL=http://localhost:$${WEB_PORT:-8000}/webhook bash scripts/simulate_webhook.sh "gasto 100 cafe"
+
+reactivate: ## Diagnostico end-to-end tras un periodo parado (ver docs/REACTIVATION.md)
+	bash scripts/reactivate.sh
+
+quick-tunnel: ## Tunel efimero trycloudflare.com (validar sin dominio propio)
+	bash scripts/quick-tunnel.sh
+
+quick-logs: ## Tail de logs del quick tunnel
+	$(COMPOSE) logs -f --tail=100 cloudflared-quick
+
+quick-down: ## Bajar solo el quick tunnel (web/postgres siguen)
+	$(COMPOSE) stop cloudflared-quick && $(COMPOSE) rm -f cloudflared-quick
 
 clean: ## Down + borrar volumenes (PIERDE datos de Postgres y /data)
 	$(COMPOSE) down -v
